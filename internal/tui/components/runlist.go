@@ -23,6 +23,7 @@ type RunList struct {
 	width   int
 	height  int
 	focused bool
+	Compact bool
 }
 
 func NewRunList() RunList {
@@ -60,10 +61,18 @@ func (r *RunList) SelectedRun() *models.WorkflowRun {
 	return &r.runs[r.cursor]
 }
 
+func (r *RunList) ToggleCompact() {
+	r.Compact = !r.Compact
+}
+
 func (r *RunList) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		pageSize := r.height / 3 // each run takes ~2-3 lines
+		linesPerRun := 3
+		if r.Compact {
+			linesPerRun = 1
+		}
+		pageSize := (r.height - 3) / linesPerRun
 		if pageSize < 1 {
 			pageSize = 1
 		}
@@ -106,8 +115,10 @@ func (r *RunList) View() string {
 		return style.Width(r.width).Height(r.height).Render(content)
 	}
 
-	// Each run takes 2 lines + 1 blank = 3 lines per entry
 	linesPerRun := 3
+	if r.Compact {
+		linesPerRun = 1
+	}
 	visibleRuns := (r.height - 3) / linesPerRun
 	if visibleRuns < 1 {
 		visibleRuns = 1
@@ -118,56 +129,66 @@ func (r *RunList) View() string {
 		start = r.cursor - visibleRuns + 1
 	}
 
-	maxWidth := r.width - 6 // account for borders + padding + prefix
+	maxWidth := r.width - 6
 	for i := start; i < len(r.runs) && i < start+visibleRuns; i++ {
 		run := r.runs[i]
 		icon := theme.StatusIcon(run.Status, run.Conclusion)
 		stStyle := theme.StatusStyle(run.Status, run.Conclusion)
 
-		// Line 1: status icon, workflow name, conclusion/status, time ago
 		conclusion := run.Conclusion
 		if conclusion == "" {
 			conclusion = run.Status
 		}
 		ago := timeAgo(run.UpdatedAt)
-		dur := duration(run.CreatedAt, run.UpdatedAt)
 
 		prefix := "  "
 		if i == r.cursor {
 			prefix = "> "
 		}
 
-		line1 := fmt.Sprintf("%s%s %s  %s  %s  %s",
-			prefix,
-			stStyle.Render(icon),
-			truncate(run.WorkflowName, min(25, maxWidth/2)),
-			stStyle.Render(conclusion),
-			dimStyle.Render(dur),
-			dimStyle.Render(ago),
-		)
-
-		// Line 2: branch, event, commit title
-		displayTitle := run.DisplayTitle
-		if displayTitle == "" {
-			displayTitle = run.Name
-		}
-		line2 := fmt.Sprintf("    %s %s  %s",
-			dimStyle.Render(run.Branch),
-			dimStyle.Render("["+run.Event+"]"),
-			dimStyle.Render(truncate(displayTitle, min(40, maxWidth-20))),
-		)
-
-		if i == r.cursor && r.focused {
-			b.WriteString(theme.SelectedItemStyle.Render(line1) + "\n")
-			b.WriteString(line2 + "\n")
-		} else if i == r.cursor {
-			b.WriteString(theme.NormalItemStyle.Render(line1) + "\n")
-			b.WriteString(line2 + "\n")
+		if r.Compact {
+			// Compact: single line
+			line := fmt.Sprintf("%s%s %-18s %s %s",
+				prefix,
+				stStyle.Render(icon),
+				truncate(run.WorkflowName, min(18, maxWidth/3)),
+				truncate(run.Branch, min(12, maxWidth/4)),
+				dimStyle.Render(ago),
+			)
+			if i == r.cursor && r.focused {
+				b.WriteString(theme.SelectedItemStyle.Render(line) + "\n")
+			} else {
+				b.WriteString(theme.NormalItemStyle.Render(line) + "\n")
+			}
 		} else {
-			b.WriteString(theme.NormalItemStyle.Render(line1) + "\n")
-			b.WriteString(line2 + "\n")
+			// Full: two lines + blank
+			dur := duration(run.CreatedAt, run.UpdatedAt)
+			line1 := fmt.Sprintf("%s%s %s  %s  %s  %s",
+				prefix,
+				stStyle.Render(icon),
+				truncate(run.WorkflowName, min(25, maxWidth/2)),
+				stStyle.Render(conclusion),
+				dimStyle.Render(dur),
+				dimStyle.Render(ago),
+			)
+
+			displayTitle := run.DisplayTitle
+			if displayTitle == "" {
+				displayTitle = run.Name
+			}
+			line2 := fmt.Sprintf("    %s %s  %s",
+				dimStyle.Render(run.Branch),
+				dimStyle.Render("["+run.Event+"]"),
+				dimStyle.Render(truncate(displayTitle, min(40, maxWidth-20))),
+			)
+
+			if i == r.cursor && r.focused {
+				b.WriteString(theme.SelectedItemStyle.Render(line1) + "\n")
+			} else {
+				b.WriteString(theme.NormalItemStyle.Render(line1) + "\n")
+			}
+			b.WriteString(line2 + "\n\n")
 		}
-		b.WriteString("\n")
 	}
 
 	content := b.String()

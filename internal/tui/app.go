@@ -312,6 +312,10 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 
+	case msg.String() == "v":
+		a.runList.ToggleCompact()
+		return a, nil
+
 	case key.Matches(msg, theme.Keys.Trigger):
 		if a.lastRepo != "" {
 			a.statusBar.SetMessage("Loading workflows...", false)
