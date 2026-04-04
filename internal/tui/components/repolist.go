@@ -47,6 +47,10 @@ func (r *RepoList) SelectedRepo() *models.Repo {
 	return &r.filtered[r.cursor]
 }
 
+func (r *RepoList) AtTop() bool {
+	return r.cursor == 0
+}
+
 func (r *RepoList) SetFilter(f string) {
 	r.filter = f
 	r.applyFilter()

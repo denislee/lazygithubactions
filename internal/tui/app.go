@@ -371,12 +371,22 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return a, a.quickSwitch.Init()
 	}
 
-	// Forward to active panel for navigation
+	// Forward to active panel for navigation, with boundary transitions
 	switch a.activePanel {
 	case orgPanel:
+		// If at bottom of org list and pressing down/j, move to repo panel
+		if a.orgSelector.AtBottom() && key.Matches(msg, theme.Keys.Down) {
+			a.activePanel = repoPanel
+			return a, nil
+		}
 		cmd := a.orgSelector.Update(msg)
 		cmds = append(cmds, cmd)
 	case repoPanel:
+		// If at top of repo list and pressing up/k, move to org panel
+		if a.repoList.AtTop() && key.Matches(msg, theme.Keys.Up) {
+			a.activePanel = orgPanel
+			return a, nil
+		}
 		cmd := a.repoList.Update(msg)
 		cmds = append(cmds, cmd)
 		if repo := a.repoList.SelectedRepo(); repo != nil && repo.FullName != a.lastRepo {

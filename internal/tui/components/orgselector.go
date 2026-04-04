@@ -65,6 +65,10 @@ func (o *OrgSelector) OrgCount() int {
 	return len(o.orgs)
 }
 
+func (o *OrgSelector) AtBottom() bool {
+	return o.cursor >= len(o.orgs)-1
+}
+
 func (o *OrgSelector) SelectOrg(org string) {
 	if org == "" {
 		o.cursor = 0

@@ -101,18 +101,23 @@ func (qs QuickSwitch) View() string {
 	b.WriteString(qs.input.View() + "\n\n")
 
 	maxVisible := 10
-	for i, m := range qs.matches {
-		if i >= maxVisible {
-			remaining := len(qs.matches) - maxVisible
-			b.WriteString(fmt.Sprintf("  ... and %d more\n", remaining))
-			break
-		}
-		prefix := "  "
+	start := 0
+	if qs.cursor >= maxVisible {
+		start = qs.cursor - maxVisible + 1
+	}
+
+	for i := start; i < len(qs.matches) && i < start+maxVisible; i++ {
+		m := qs.matches[i]
 		if i == qs.cursor {
 			b.WriteString(theme.SelectedItemStyle.Render("> "+m.Str) + "\n")
 		} else {
-			b.WriteString(theme.NormalItemStyle.Render(prefix+m.Str) + "\n")
+			b.WriteString(theme.NormalItemStyle.Render("  "+m.Str) + "\n")
 		}
+	}
+
+	if start+maxVisible < len(qs.matches) {
+		remaining := len(qs.matches) - (start + maxVisible)
+		b.WriteString(fmt.Sprintf("  ... and %d more\n", remaining))
 	}
 
 	if len(qs.matches) == 0 {
