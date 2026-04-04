@@ -25,11 +25,13 @@ type WorkflowRun struct {
 }
 
 type Job struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
-	Steps      []Step `json:"steps"`
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Status      string    `json:"status"`
+	Conclusion  string    `json:"conclusion"`
+	StartedAt   time.Time `json:"startedAt"`
+	CompletedAt time.Time `json:"completedAt"`
+	Steps       []Step    `json:"steps"`
 }
 
 type Step struct {

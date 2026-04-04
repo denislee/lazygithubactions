@@ -19,11 +19,12 @@ type RunDetail struct {
 }
 
 type detailLine struct {
-	text    string
-	isJob   bool
-	indent  int
-	status  string
+	text       string
+	isJob      bool
+	indent     int
+	status     string
 	conclusion string
+	duration   string
 }
 
 func NewRunDetail() RunDetail {
@@ -47,11 +48,18 @@ func (d *RunDetail) buildLines() {
 		return
 	}
 	for _, job := range d.detail.Jobs {
+		dur := ""
+		if !job.StartedAt.IsZero() && !job.CompletedAt.IsZero() {
+			dur = duration(job.StartedAt, job.CompletedAt)
+		} else if !job.StartedAt.IsZero() && job.Status == "in_progress" {
+			dur = "running..."
+		}
 		d.lines = append(d.lines, detailLine{
 			text:       job.Name,
 			isJob:      true,
 			status:     job.Status,
 			conclusion: job.Conclusion,
+			duration:   dur,
 		})
 		for _, step := range job.Steps {
 			d.lines = append(d.lines, detailLine{
@@ -138,7 +146,11 @@ func (d *RunDetail) View() string {
 			if i == d.cursor {
 				prefix = "> "
 			}
-			text = fmt.Sprintf("%s%s %s", prefix, style.Render(icon), line.text)
+			durStr := ""
+			if line.duration != "" {
+				durStr = "  " + dimStyle.Render(line.duration)
+			}
+			text = fmt.Sprintf("%s%s %s%s", prefix, style.Render(icon), line.text, durStr)
 		} else {
 			// Step line
 			prefix = "      "
