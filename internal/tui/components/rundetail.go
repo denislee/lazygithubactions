@@ -11,30 +11,34 @@ import (
 )
 
 type RunDetail struct {
-	detail *models.RunDetail
-	cursor int
-	width  int
-	height int
-	lines  []detailLine // pre-computed lines for rendering
+	detail    *models.RunDetail
+	cursor    int
+	width     int
+	height    int
+	collapsed map[int]bool // job index -> collapsed state
 }
 
-type detailLine struct {
+type visibleLine struct {
 	text       string
 	isJob      bool
-	indent     int
+	jobIdx     int // which job this belongs to
 	status     string
 	conclusion string
 	duration   string
+	indent     int
+	collapsed  bool // only for job lines: whether this job is collapsed
 }
 
 func NewRunDetail() RunDetail {
-	return RunDetail{}
+	return RunDetail{
+		collapsed: make(map[int]bool),
+	}
 }
 
 func (d *RunDetail) SetDetail(detail *models.RunDetail) {
 	d.detail = detail
 	d.cursor = 0
-	d.buildLines()
+	d.collapsed = make(map[int]bool)
 }
 
 func (d *RunDetail) SetSize(w, h int) {
@@ -42,44 +46,56 @@ func (d *RunDetail) SetSize(w, h int) {
 	d.height = h
 }
 
-func (d *RunDetail) buildLines() {
-	d.lines = nil
+// visibleLines builds the list of currently visible lines (respecting collapsed state).
+func (d *RunDetail) visibleLines() []visibleLine {
 	if d.detail == nil {
-		return
+		return nil
 	}
-	for _, job := range d.detail.Jobs {
+	var lines []visibleLine
+	for ji, job := range d.detail.Jobs {
 		dur := ""
 		if !job.StartedAt.IsZero() && !job.CompletedAt.IsZero() {
 			dur = duration(job.StartedAt, job.CompletedAt)
 		} else if !job.StartedAt.IsZero() && job.Status == "in_progress" {
 			dur = "running..."
 		}
-		d.lines = append(d.lines, detailLine{
+
+		isCollapsed := d.collapsed[ji]
+		lines = append(lines, visibleLine{
 			text:       job.Name,
 			isJob:      true,
+			jobIdx:     ji,
 			status:     job.Status,
 			conclusion: job.Conclusion,
 			duration:   dur,
+			collapsed:  isCollapsed,
 		})
-		for _, step := range job.Steps {
-			d.lines = append(d.lines, detailLine{
-				text:       step.Name,
-				indent:     1,
-				status:     step.Status,
-				conclusion: step.Conclusion,
-			})
+
+		if !isCollapsed {
+			for _, step := range job.Steps {
+				lines = append(lines, visibleLine{
+					text:       step.Name,
+					indent:     1,
+					jobIdx:     ji,
+					status:     step.Status,
+					conclusion: step.Conclusion,
+				})
+			}
 		}
 	}
+	return lines
 }
 
 func (d *RunDetail) Update(msg tea.Msg) tea.Cmd {
 	if d.detail == nil {
 		return nil
 	}
-	total := len(d.lines)
+	lines := d.visibleLines()
+	total := len(lines)
 	if total == 0 {
 		return nil
 	}
+
 	pageSize := d.height - 5
 	if pageSize < 1 {
 		pageSize = 1
@@ -106,6 +122,17 @@ func (d *RunDetail) Update(msg tea.Msg) tea.Cmd {
 			if d.cursor < 0 {
 				d.cursor = 0
 			}
+		case key.Matches(msg, theme.Keys.Enter) || msg.String() == "l":
+			// Toggle collapse on job lines
+			if d.cursor < total && lines[d.cursor].isJob {
+				ji := lines[d.cursor].jobIdx
+				d.collapsed[ji] = !d.collapsed[ji]
+				// Clamp cursor if it would be past the new end
+				newLines := d.visibleLines()
+				if d.cursor >= len(newLines) {
+					d.cursor = len(newLines) - 1
+				}
+			}
 		}
 	}
 	return nil
@@ -123,8 +150,9 @@ func (d *RunDetail) View() string {
 		run.ID, run.WorkflowName, run.Branch)
 	b.WriteString(theme.TitleStyle.Render(header) + "\n\n")
 
-	// Scrollable area
-	visibleHeight := d.height - 5 // header + border padding
+	lines := d.visibleLines()
+
+	visibleHeight := d.height - 5
 	if visibleHeight < 1 {
 		visibleHeight = 1
 	}
@@ -134,25 +162,28 @@ func (d *RunDetail) View() string {
 		start = d.cursor - visibleHeight + 1
 	}
 
-	for i := start; i < len(d.lines) && i < start+visibleHeight; i++ {
-		line := d.lines[i]
+	for i := start; i < len(lines) && i < start+visibleHeight; i++ {
+		line := lines[i]
 		icon := theme.StatusIcon(line.status, line.conclusion)
 		style := theme.StatusStyle(line.status, line.conclusion)
 
 		var prefix, text string
-		if line.indent == 0 {
-			// Job line
+		if line.isJob {
 			prefix = "  "
 			if i == d.cursor {
 				prefix = "> "
+			}
+			// Collapse indicator
+			arrow := "▼"
+			if line.collapsed {
+				arrow = "▶"
 			}
 			durStr := ""
 			if line.duration != "" {
 				durStr = "  " + dimStyle.Render(line.duration)
 			}
-			text = fmt.Sprintf("%s%s %s%s", prefix, style.Render(icon), line.text, durStr)
+			text = fmt.Sprintf("%s%s %s %s%s", prefix, arrow, style.Render(icon), line.text, durStr)
 		} else {
-			// Step line
 			prefix = "      "
 			if i == d.cursor {
 				prefix = "    > "
@@ -162,7 +193,7 @@ func (d *RunDetail) View() string {
 		b.WriteString(text + "\n")
 	}
 
-	if len(d.lines) == 0 {
+	if len(lines) == 0 {
 		b.WriteString(theme.NormalItemStyle.Render("  No jobs found"))
 	}
 
