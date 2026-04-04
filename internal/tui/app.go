@@ -88,14 +88,15 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyPressMsg:
-		// Global quit — always active unless in an overlay/dialog
-		if key.Matches(msg, theme.Keys.Quit) {
-			switch a.ActiveView {
-			case QuickSwitchView, TriggerView, ConfirmView:
-				// let dialogs handle it
-			default:
-				return a, tea.Quit
-			}
+		// Ctrl+C always quits, no matter what view
+		if msg.String() == "ctrl+c" {
+			return a, tea.Quit
+		}
+
+		// q quits only outside overlays
+		if msg.String() == "q" && a.ActiveView != QuickSwitchView &&
+			a.ActiveView != TriggerView && a.ActiveView != ConfirmView {
+			return a, tea.Quit
 		}
 
 		switch a.ActiveView {
@@ -373,6 +374,12 @@ func (a App) updateLogView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (a App) updateQuickSwitchView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if a.quickSwitch == nil {
 		a.ActiveView = MainView
+		return a, nil
+	}
+	// Ctrl+K or Ctrl+[ toggles quick switch closed
+	if msg.String() == "ctrl+k" || msg.String() == "ctrl+[" {
+		a.ActiveView = MainView
+		a.quickSwitch = nil
 		return a, nil
 	}
 	qs, cmd := a.quickSwitch.Update(msg)

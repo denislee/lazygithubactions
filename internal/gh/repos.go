@@ -20,26 +20,20 @@ type repoJSON struct {
 // ListRepos fetches all repos the authenticated user has access to,
 // including personal, collaborator, and organization repos.
 func (c *Client) ListRepos(ctx context.Context) ([]models.Repo, error) {
-	out, err := c.run(ctx, "api", "/user/repos",
+	out, err := c.run(ctx, "api",
+		"/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member",
 		"--paginate",
-		"-q", ".[]",
-		"--jq", ".",
-		"-f", "per_page=100",
-		"-f", "sort=updated",
-		"-f", "affiliation=owner,collaborator,organization_member",
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	// gh api --paginate with arrays outputs concatenated JSON arrays.
-	// Wrap in a single array if needed.
 	raw := strings.TrimSpace(string(out))
 	if raw == "" {
 		return nil, nil
 	}
 
-	// --paginate concatenates arrays: [...][...] — merge them
+	// --paginate concatenates JSON arrays: [...][...] — merge into one
 	raw = strings.ReplaceAll(raw, "][", ",")
 
 	var repos []repoJSON
