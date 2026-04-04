@@ -144,20 +144,22 @@ func (r *RunList) View() string {
 	statusCol := 0 // only in full mode
 
 	if r.Compact {
-		// Compact columns: name | branch | age
-		// Find the longest branch name in visible runs to size the column
+		// Compact columns: name | branch | duration | age
+		durCol := 8 // e.g. "10m10s"
+
+		// Auto-size branch column from visible runs
 		branchCol := 0
 		for i := start; i < len(r.runs) && i < start+visibleRuns; i++ {
 			if len(r.runs[i].Branch) > branchCol {
 				branchCol = len(r.runs[i].Branch)
 			}
 		}
-		branchCol += 1 // padding
-		maxBranch := avail - agoCol - 12 // reserve at least 10 for name + 2 gaps
+		branchCol += 1
+		maxBranch := avail - agoCol - durCol - 14 // reserve name + gaps
 		if branchCol > maxBranch {
 			branchCol = maxBranch
 		}
-		nameCol := avail - branchCol - agoCol - 2
+		nameCol := avail - branchCol - durCol - agoCol - 3 // 3 gaps
 		if nameCol < 8 {
 			nameCol = 8
 		}
@@ -167,17 +169,19 @@ func (r *RunList) View() string {
 			icon := theme.StatusIcon(run.Status, run.Conclusion)
 			stStyle := theme.StatusStyle(run.Status, run.Conclusion)
 			ago := timeAgo(run.UpdatedAt)
+			dur := duration(run.CreatedAt, run.UpdatedAt)
 
 			prefix := "  "
 			if i == r.cursor {
 				prefix = "> "
 			}
 
-			line := fmt.Sprintf("%s%s %-*s %-*s %*s",
+			line := fmt.Sprintf("%s%s %-*s %-*s %*s %*s",
 				prefix,
 				stStyle.Render(icon),
 				nameCol, truncate(run.WorkflowName, nameCol),
 				branchCol, truncate(run.Branch, branchCol),
+				durCol, dimStyle.Render(dur),
 				agoCol, ago,
 			)
 
