@@ -176,13 +176,17 @@ func (r *RunList) View() string {
 				prefix = "> "
 			}
 
-			line := fmt.Sprintf("%s%s %-*s %-*s %*s %*s",
+			// Pad raw strings first, then apply styles to avoid ANSI width issues
+			durPad := fmt.Sprintf("%*s", durCol, dur)
+			agoPad := fmt.Sprintf("%*s", agoCol, ago)
+
+			line := fmt.Sprintf("%s%s %-*s %-*s %s %s",
 				prefix,
 				stStyle.Render(icon),
 				nameCol, truncate(run.WorkflowName, nameCol),
 				branchCol, truncate(run.Branch, branchCol),
-				durCol, dimStyle.Render(dur),
-				agoCol, ago,
+				dimStyle.Render(durPad),
+				agoPad,
 			)
 
 			if i == r.cursor && r.focused {
