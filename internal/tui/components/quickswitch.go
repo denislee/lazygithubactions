@@ -108,10 +108,11 @@ func (qs QuickSwitch) View() string {
 
 	for i := start; i < len(qs.matches) && i < start+maxVisible; i++ {
 		m := qs.matches[i]
+		name := qs.repos[m.Index].Name
 		if i == qs.cursor {
-			b.WriteString(theme.SelectedItemStyle.Render("> "+m.Str) + "\n")
+			b.WriteString(theme.SelectedItemStyle.Render("> "+name) + "\n")
 		} else {
-			b.WriteString(theme.NormalItemStyle.Render("  "+m.Str) + "\n")
+			b.WriteString(theme.NormalItemStyle.Render("  "+name) + "\n")
 		}
 	}
 

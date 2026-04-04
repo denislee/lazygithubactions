@@ -76,12 +76,12 @@ func (r *RunList) Update(msg tea.Msg) tea.Cmd {
 			if r.cursor < len(r.runs)-1 {
 				r.cursor++
 			}
-		case msg.String() == "ctrl+n":
+		case msg.String() == "ctrl+n" || msg.String() == "ctrl+f":
 			r.cursor += pageSize
 			if r.cursor >= len(r.runs) {
 				r.cursor = len(r.runs) - 1
 			}
-		case msg.String() == "ctrl+p":
+		case msg.String() == "ctrl+p" || msg.String() == "ctrl+b":
 			r.cursor -= pageSize
 			if r.cursor < 0 {
 				r.cursor = 0
