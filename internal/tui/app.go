@@ -73,7 +73,7 @@ func NewApp() App {
 
 	cfg := gh.LoadConfig()
 
-	return App{
+	app := App{
 		client:      gh.NewClient(),
 		orgSelector: components.NewOrgSelector(),
 		repoList:    components.NewRepoList(),
@@ -82,11 +82,13 @@ func NewApp() App {
 		logViewer:   components.NewLogViewer(),
 		statusBar:   components.NewStatusBar(),
 		spinner:     s,
-		activePanel: repoPanel,
-		ActiveView:  MainView,
-		selectedOrg: cfg.SelectedOrg,
+		activePanel:  repoPanel,
+		ActiveView:   MainView,
+		selectedOrg:  cfg.SelectedOrg,
 		loadingRepos: true,
 	}
+	app.runList.Compact = cfg.CompactView
+	return app
 }
 
 func (a App) Init() tea.Cmd {
@@ -328,6 +330,7 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case msg.String() == "v":
 		a.runList.ToggleCompact()
+		_ = gh.SaveConfig(gh.UserConfig{SelectedOrg: a.selectedOrg, CompactView: a.runList.Compact})
 		return a, nil
 
 	case key.Matches(msg, theme.Keys.Trigger):

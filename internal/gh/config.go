@@ -8,6 +8,7 @@ import (
 
 type UserConfig struct {
 	SelectedOrg string `json:"selectedOrg"` // "" means "All"
+	CompactView bool   `json:"compactView"`
 }
 
 func configDir() string {
