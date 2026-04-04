@@ -174,6 +174,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			a.runList.SetRuns(msg.Runs, msg.Repo)
 			a.lastRepo = msg.Repo
+			a.statusBar.Clear()
 		}
 
 	case RunDetailLoadedMsg:
@@ -183,6 +184,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			a.runDetail.SetDetail(msg.Detail)
 			a.ActiveView = DetailView
+			a.statusBar.Clear()
 		}
 
 	case LogLoadedMsg:
@@ -195,6 +197,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				title = fmt.Sprintf("%s #%d", run.WorkflowName, run.ID)
 			}
 			a.logViewer.SetContent(title, msg.Log)
+			a.statusBar.Clear()
 			a.ActiveView = LogView
 		}
 
@@ -205,6 +208,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			td := components.NewTriggerDialog(msg.Workflows)
 			a.triggerDlg = &td
 			a.ActiveView = TriggerView
+			a.statusBar.Clear()
 		}
 
 	case components.LogCopiedMsg:

@@ -145,7 +145,7 @@ func (r *RunList) View() string {
 
 	if r.Compact {
 		// Compact columns: name | branch | age
-		branchCol := min(18, avail/4)
+		branchCol := min(28, avail/3)
 		nameCol := avail - branchCol - agoCol - 2 // 2 for gaps
 		if nameCol < 8 {
 			nameCol = 8
