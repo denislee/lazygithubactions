@@ -151,13 +151,21 @@ func (r *RunList) View() string {
 		}
 
 		if r.Compact {
-			// Compact: single line
-			line := fmt.Sprintf("%s%s %-18s %s %s",
+			// Compact: single line — use available width
+			agoStr := dimStyle.Render(ago)
+			branchWidth := min(16, maxWidth/4)
+			// workflow name gets remaining space
+			nameWidth := maxWidth - branchWidth - len(ago) - 6 // icon + spaces + prefix
+			if nameWidth < 10 {
+				nameWidth = 10
+			}
+			line := fmt.Sprintf("%s%s %-*s %s %s",
 				prefix,
 				stStyle.Render(icon),
-				truncate(run.WorkflowName, min(18, maxWidth/3)),
-				truncate(run.Branch, min(12, maxWidth/4)),
-				dimStyle.Render(ago),
+				nameWidth,
+				truncate(run.WorkflowName, nameWidth),
+				truncate(run.Branch, branchWidth),
+				agoStr,
 			)
 			if i == r.cursor && r.focused {
 				b.WriteString(theme.SelectedItemStyle.Render(line) + "\n")

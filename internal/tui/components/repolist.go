@@ -102,12 +102,13 @@ func (r *RepoList) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (r *RepoList) View() string {
+// ViewContent returns the repo list content without borders (for embedding in a combined panel).
+func (r *RepoList) ViewContent() string {
 	var b strings.Builder
 	title := theme.TitleStyle.Render("Repositories")
 	b.WriteString(title + "\n")
 
-	visibleHeight := r.height - 3
+	visibleHeight := r.height
 	if visibleHeight < 1 {
 		visibleHeight = 1
 	}
@@ -134,10 +135,5 @@ func (r *RepoList) View() string {
 		b.WriteString(theme.NormalItemStyle.Render("  No repositories found"))
 	}
 
-	content := b.String()
-	style := theme.PanelStyle
-	if r.focused {
-		style = theme.ActivePanelStyle
-	}
-	return style.Width(r.width).Height(r.height).Render(content)
+	return b.String()
 }

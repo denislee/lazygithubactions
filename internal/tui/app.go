@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -539,37 +540,55 @@ func (a App) renderMainLayout() string {
 		leftWidth = 20
 	}
 	runWidth := a.width - leftWidth
-	totalHeight := a.height - 2 // room for status + help bars
+	totalHeight := a.height - 2
 
-	// Left column: org selector (fixed) + repo list (remaining)
-	// Each panel border takes 2 lines (top+bottom), so org inner height
-	// is orgHeight - 2 border lines. We size the outer heights here.
-	orgHeight := min(a.orgSelector.OrgCount()+3, 8)
-	if orgHeight < 4 {
-		orgHeight = 4
+	// Inner dimensions (subtract border: 2 top/bottom, 2 left/right padding)
+	innerWidth := leftWidth - 4
+
+	// Org section height (content lines, no border)
+	orgContentLines := min(a.orgSelector.OrgCount(), 5)
+	if orgContentLines < 1 {
+		orgContentLines = 1
 	}
-	repoHeight := totalHeight - orgHeight
-	if repoHeight < 4 {
-		repoHeight = 4
+	orgSectionHeight := orgContentLines + 1 // +1 for title line
+
+	// Repo section gets the rest
+	// Total inner = totalHeight - 2 (border) - orgSection - 1 (divider)
+	repoContentHeight := totalHeight - 2 - orgSectionHeight - 1
+	if repoContentHeight < 3 {
+		repoContentHeight = 3
 	}
 
-	a.orgSelector.SetSize(leftWidth, orgHeight)
+	a.orgSelector.SetSize(innerWidth, orgContentLines)
 	a.orgSelector.SetFocused(a.activePanel == orgPanel)
 
-	a.repoList.SetSize(leftWidth, repoHeight)
+	a.repoList.SetSize(innerWidth, repoContentHeight-1) // -1 for title
 	a.repoList.SetFocused(a.activePanel == repoPanel)
 
 	a.runList.SetSize(runWidth, totalHeight)
 	a.runList.SetFocused(a.activePanel == runPanel)
 
-	// Render left column with loading indicators
-	orgView := a.orgSelector.View()
-	repoView := a.repoList.View()
+	// Build left panel content: org + divider + repos in a single frame
+	orgContent := a.orgSelector.ViewContent()
+	divider := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).
+		Render(strings.Repeat("─", innerWidth))
+
+	var repoContent string
 	if a.loadingRepos {
-		repoView = a.renderLoadingPanel("Repositories", leftWidth, repoHeight, a.activePanel == repoPanel)
+		repoContent = theme.TitleStyle.Render("Repositories") + "\n"
+		repoContent += "  " + a.spinner.View() + " Loading..."
+	} else {
+		repoContent = a.repoList.ViewContent()
 	}
 
-	leftCol := lipgloss.JoinVertical(lipgloss.Left, orgView, repoView)
+	leftContent := orgContent + divider + "\n" + repoContent
+
+	focused := a.activePanel == orgPanel || a.activePanel == repoPanel
+	leftStyle := theme.PanelStyle
+	if focused {
+		leftStyle = theme.ActivePanelStyle
+	}
+	leftCol := leftStyle.Width(leftWidth).Height(totalHeight).Render(leftContent)
 
 	runView := a.runList.View()
 	if a.loadingRuns {

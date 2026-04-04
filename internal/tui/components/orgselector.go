@@ -107,12 +107,13 @@ func (o *OrgSelector) emitChange() tea.Cmd {
 	return func() tea.Msg { return OrgChangedMsg{Org: org} }
 }
 
-func (o *OrgSelector) View() string {
+// ViewContent returns the org list content without borders (for embedding in a combined panel).
+func (o *OrgSelector) ViewContent() string {
 	var b strings.Builder
 	title := theme.TitleStyle.Render("Organization")
 	b.WriteString(title + "\n")
 
-	visibleHeight := o.height - 3
+	visibleHeight := o.height
 	if visibleHeight < 1 {
 		visibleHeight = 1
 	}
@@ -133,9 +134,5 @@ func (o *OrgSelector) View() string {
 		}
 	}
 
-	style := theme.PanelStyle
-	if o.focused {
-		style = theme.ActivePanelStyle
-	}
-	return style.Width(o.width).Height(o.height).Render(b.String())
+	return b.String()
 }
