@@ -92,22 +92,30 @@ func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
 			}
 			return nil
 
-		// Page navigation
+		// Page navigation — move cursor by a page, scroll only to keep it visible
 		case msg.String() == "ctrl+f" || msg.String() == "ctrl+n":
-			l.viewport.PageDown()
-			l.cursorLine += l.viewport.Height()
+			h := l.viewport.Height()
+			l.cursorLine += h
 			if l.cursorLine >= len(l.lines) {
 				l.cursorLine = len(l.lines) - 1
 			}
+			// Scroll so cursor is at the top of the viewport
+			l.viewport.SetYOffset(l.cursorLine)
 			l.updateLineStyles()
 			return nil
 
 		case msg.String() == "ctrl+b" || msg.String() == "ctrl+p":
-			l.viewport.PageUp()
-			l.cursorLine -= l.viewport.Height()
+			h := l.viewport.Height()
+			l.cursorLine -= h
 			if l.cursorLine < 0 {
 				l.cursorLine = 0
 			}
+			// Scroll so cursor is at the bottom of the viewport
+			offset := l.cursorLine - h + 1
+			if offset < 0 {
+				offset = 0
+			}
+			l.viewport.SetYOffset(offset)
 			l.updateLineStyles()
 			return nil
 
