@@ -93,6 +93,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 		}
 
+		// Normalize ctrl+[ to esc globally
+		if msg.String() == "ctrl+[" {
+			msg = tea.KeyPressMsg{Code: 27} // ESC
+		}
+
 		// q quits only outside overlays
 		if msg.String() == "q" && a.ActiveView != QuickSwitchView &&
 			a.ActiveView != TriggerView && a.ActiveView != ConfirmView {
@@ -233,19 +238,23 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, theme.Keys.Refresh):
 		return a, a.refreshCurrent()
 
-	case key.Matches(msg, theme.Keys.Enter) || (msg.String() == "l" && a.activePanel == runPanel):
+	case key.Matches(msg, theme.Keys.Enter) || msg.String() == "l":
 		if a.activePanel == repoPanel {
+			// l or enter on repo panel: select repo and focus run panel
+			a.activePanel = runPanel
 			return a, a.selectRepo()
 		}
-		// Drill into run detail
+		// l or enter on run panel: drill into run detail
 		if run := a.runList.SelectedRun(); run != nil {
 			a.statusBar.SetMessage("Loading run details...", false)
 			return a, a.loadRunDetail(run.ID)
 		}
 
-	case msg.String() == "h" && a.activePanel == runPanel:
-		a.activePanel = repoPanel
-		return a, nil
+	case msg.String() == "h":
+		if a.activePanel == runPanel {
+			a.activePanel = repoPanel
+			return a, nil
+		}
 
 	case key.Matches(msg, theme.Keys.Trigger):
 		if a.lastRepo != "" {
@@ -380,8 +389,8 @@ func (a App) updateQuickSwitchView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		a.ActiveView = MainView
 		return a, nil
 	}
-	// Ctrl+K or Ctrl+[ toggles quick switch closed
-	if msg.String() == "ctrl+k" || msg.String() == "ctrl+[" {
+	// Ctrl+K toggles quick switch closed (ctrl+[ is normalized to esc upstream)
+	if msg.String() == "ctrl+k" {
 		a.ActiveView = MainView
 		a.quickSwitch = nil
 		return a, nil
