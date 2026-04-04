@@ -12,6 +12,7 @@ type Repo struct {
 type WorkflowRun struct {
 	ID           int64     `json:"databaseId"`
 	Name         string    `json:"name"`
+	DisplayTitle string    `json:"displayTitle"`
 	Status       string    `json:"status"`
 	Conclusion   string    `json:"conclusion"`
 	Branch       string    `json:"headBranch"`
@@ -20,6 +21,7 @@ type WorkflowRun struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 	URL          string    `json:"url"`
 	WorkflowName string   `json:"workflowName"`
+	Attempt      int       `json:"attempt"`
 }
 
 type Job struct {

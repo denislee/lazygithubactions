@@ -206,6 +206,13 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.ActiveView = TriggerView
 		}
 
+	case components.LogCopiedMsg:
+		if msg.Err != nil {
+			a.statusBar.SetMessage("Copy failed: "+msg.Err.Error(), true)
+		} else {
+			a.statusBar.SetMessage(fmt.Sprintf("Copied %d lines to clipboard", msg.Lines), false)
+		}
+
 	case components.OrgChangedMsg:
 		a.selectedOrg = msg.Org
 		a.filterReposByOrg()

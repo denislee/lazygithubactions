@@ -12,7 +12,7 @@ func (c *Client) ListRuns(ctx context.Context, repo string) ([]models.WorkflowRu
 	var runs []models.WorkflowRun
 	err := c.runJSON(ctx, &runs, "run", "list",
 		"-R", repo,
-		"--json", "databaseId,name,status,conclusion,headBranch,event,createdAt,updatedAt,url,workflowName",
+		"--json", "databaseId,name,displayTitle,status,conclusion,headBranch,event,createdAt,updatedAt,url,workflowName,attempt",
 		"--limit", "30",
 	)
 	return runs, err

@@ -7,8 +7,13 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/dns/lazygithubactions/internal/models"
 	"github.com/dns/lazygithubactions/internal/tui/theme"
+)
+
+var (
+	dimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
 )
 
 type RunList struct {
@@ -58,7 +63,7 @@ func (r *RunList) SelectedRun() *models.WorkflowRun {
 func (r *RunList) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		pageSize := r.height - 3
+		pageSize := r.height / 3 // each run takes ~2-3 lines
 		if pageSize < 1 {
 			pageSize = 1
 		}
@@ -101,34 +106,68 @@ func (r *RunList) View() string {
 		return style.Width(r.width).Height(r.height).Render(content)
 	}
 
-	visibleHeight := r.height - 3
-	if visibleHeight < 1 {
-		visibleHeight = 1
+	// Each run takes 2 lines + 1 blank = 3 lines per entry
+	linesPerRun := 3
+	visibleRuns := (r.height - 3) / linesPerRun
+	if visibleRuns < 1 {
+		visibleRuns = 1
 	}
 
 	start := 0
-	if r.cursor >= visibleHeight {
-		start = r.cursor - visibleHeight + 1
+	if r.cursor >= visibleRuns {
+		start = r.cursor - visibleRuns + 1
 	}
 
-	for i := start; i < len(r.runs) && i < start+visibleHeight; i++ {
+	maxWidth := r.width - 6 // account for borders + padding + prefix
+	for i := start; i < len(r.runs) && i < start+visibleRuns; i++ {
 		run := r.runs[i]
 		icon := theme.StatusIcon(run.Status, run.Conclusion)
 		stStyle := theme.StatusStyle(run.Status, run.Conclusion)
-		status := stStyle.Render(icon)
 
+		// Line 1: status icon, workflow name, conclusion/status, time ago
+		conclusion := run.Conclusion
+		if conclusion == "" {
+			conclusion = run.Status
+		}
 		ago := timeAgo(run.UpdatedAt)
-		line := fmt.Sprintf("%s  #%d %-20s %-12s %s",
-			status, run.ID, truncate(run.WorkflowName, 20), truncate(run.Branch, 12), ago)
+		dur := duration(run.CreatedAt, run.UpdatedAt)
+
+		prefix := "  "
+		if i == r.cursor {
+			prefix = "> "
+		}
+
+		line1 := fmt.Sprintf("%s%s %s  %s  %s  %s",
+			prefix,
+			stStyle.Render(icon),
+			truncate(run.WorkflowName, min(25, maxWidth/2)),
+			stStyle.Render(conclusion),
+			dimStyle.Render(dur),
+			dimStyle.Render(ago),
+		)
+
+		// Line 2: branch, event, commit title
+		displayTitle := run.DisplayTitle
+		if displayTitle == "" {
+			displayTitle = run.Name
+		}
+		line2 := fmt.Sprintf("    %s %s  %s",
+			dimStyle.Render(run.Branch),
+			dimStyle.Render("["+run.Event+"]"),
+			dimStyle.Render(truncate(displayTitle, min(40, maxWidth-20))),
+		)
 
 		if i == r.cursor && r.focused {
-			line = theme.SelectedItemStyle.Render("> " + line)
+			b.WriteString(theme.SelectedItemStyle.Render(line1) + "\n")
+			b.WriteString(line2 + "\n")
 		} else if i == r.cursor {
-			line = theme.NormalItemStyle.Render("> " + line)
+			b.WriteString(theme.NormalItemStyle.Render(line1) + "\n")
+			b.WriteString(line2 + "\n")
 		} else {
-			line = theme.NormalItemStyle.Render("  " + line)
+			b.WriteString(theme.NormalItemStyle.Render(line1) + "\n")
+			b.WriteString(line2 + "\n")
 		}
-		b.WriteString(line + "\n")
+		b.WriteString("\n")
 	}
 
 	content := b.String()
@@ -140,6 +179,9 @@ func (r *RunList) View() string {
 }
 
 func timeAgo(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
 	d := time.Since(t)
 	switch {
 	case d < time.Minute:
@@ -153,9 +195,40 @@ func timeAgo(t time.Time) string {
 	}
 }
 
+func duration(start, end time.Time) string {
+	if start.IsZero() || end.IsZero() {
+		return ""
+	}
+	d := end.Sub(start)
+	if d < 0 {
+		return ""
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+}
+
 func truncate(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
 	if len(s) <= max {
 		return s
 	}
+	if max <= 1 {
+		return "…"
+	}
 	return s[:max-1] + "…"
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
