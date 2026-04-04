@@ -41,6 +41,10 @@ func (r *RunList) SetFocused(f bool) {
 	r.focused = f
 }
 
+func (r *RunList) Empty() bool {
+	return len(r.runs) == 0
+}
+
 func (r *RunList) SelectedRun() *models.WorkflowRun {
 	if len(r.runs) == 0 {
 		return nil

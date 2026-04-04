@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/dns/lazygithubactions/internal/gh"
@@ -17,7 +18,8 @@ import (
 type panel int
 
 const (
-	repoPanel panel = iota
+	orgPanel panel = iota
+	repoPanel
 	runPanel
 )
 
@@ -33,9 +35,10 @@ const (
 )
 
 type App struct {
-	client   *gh.Client
-	repoList components.RepoList
-	runList  components.RunList
+	client      *gh.Client
+	orgSelector components.OrgSelector
+	repoList    components.RepoList
+	runList     components.RunList
 
 	// Sub-views
 	runDetail   components.RunDetail
@@ -45,28 +48,43 @@ type App struct {
 	confirmDlg  *components.ConfirmDialog
 	statusBar   components.StatusBar
 
-	activePanel panel
-	ActiveView  view
-	width       int
-	height      int
+	activePanel  panel
+	ActiveView   view
+	previousView view // for back navigation from log view
+	width        int
+	height       int
 
-	lastRepo string
-	repos    []models.Repo // cached for QuickSwitch
-	loading  bool
-	err      error
-	message  string
+	lastRepo    string
+	allRepos    []models.Repo // all repos from API
+	repos       []models.Repo // filtered by org for QuickSwitch
+	selectedOrg string
+
+	loadingRepos bool
+	loadingRuns  bool
+	spinner      spinner.Model
+	err          error
+	message      string
 }
 
 func NewApp() App {
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+
+	cfg := gh.LoadConfig()
+
 	return App{
 		client:      gh.NewClient(),
+		orgSelector: components.NewOrgSelector(),
 		repoList:    components.NewRepoList(),
 		runList:     components.NewRunList(),
 		runDetail:   components.NewRunDetail(),
 		logViewer:   components.NewLogViewer(),
 		statusBar:   components.NewStatusBar(),
+		spinner:     s,
 		activePanel: repoPanel,
 		ActiveView:  MainView,
+		selectedOrg: cfg.SelectedOrg,
+		loadingRepos: true,
 	}
 }
 
@@ -74,6 +92,7 @@ func (a App) Init() tea.Cmd {
 	return tea.Batch(
 		a.loadRepos(),
 		a.tick(),
+		a.spinner.Tick,
 	)
 }
 
@@ -86,6 +105,11 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.height = msg.Height
 		a.statusBar.SetWidth(a.width)
 		return a, nil
+
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		a.spinner, cmd = a.spinner.Update(msg)
+		return a, cmd
 
 	case tea.KeyPressMsg:
 		// Ctrl+C always quits, no matter what view
@@ -125,20 +149,24 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case ReposLoadedMsg:
-		a.loading = false
+		a.loadingRepos = false
 		if msg.Err != nil {
 			a.err = msg.Err
 			a.statusBar.SetMessage("Error: "+msg.Err.Error(), true)
 		} else {
-			a.repos = msg.Repos
-			a.repoList.SetRepos(msg.Repos)
+			a.allRepos = msg.Repos
+			a.orgSelector.SetOrgs(msg.Repos)
+			a.orgSelector.SelectOrg(a.selectedOrg)
+			a.filterReposByOrg()
 			a.statusBar.Clear()
 			if repo := a.repoList.SelectedRepo(); repo != nil {
+				a.loadingRuns = true
 				cmds = append(cmds, a.loadRuns(repo.FullName))
 			}
 		}
 
 	case RunsLoadedMsg:
+		a.loadingRuns = false
 		if msg.Err != nil {
 			a.err = msg.Err
 			a.statusBar.SetMessage("Error: "+msg.Err.Error(), true)
@@ -159,7 +187,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case LogLoadedMsg:
 		if msg.Err != nil {
 			a.statusBar.SetMessage("Error loading logs: "+msg.Err.Error(), true)
-			a.ActiveView = MainView
+			a.ActiveView = a.previousView
 		} else {
 			title := a.lastRepo
 			if run := a.runList.SelectedRun(); run != nil {
@@ -178,12 +206,23 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.ActiveView = TriggerView
 		}
 
+	case components.OrgChangedMsg:
+		a.selectedOrg = msg.Org
+		a.filterReposByOrg()
+		_ = gh.SaveConfig(gh.UserConfig{SelectedOrg: msg.Org})
+		// Load runs for first repo in filtered list
+		if repo := a.repoList.SelectedRepo(); repo != nil {
+			a.loadingRuns = true
+			cmds = append(cmds, a.loadRuns(repo.FullName))
+		}
+
 	case components.QuickSwitchResultMsg:
 		a.ActiveView = MainView
 		a.quickSwitch = nil
 		if !msg.Cancelled && msg.Repo != nil {
 			a.lastRepo = msg.Repo.FullName
 			a.activePanel = runPanel
+			a.loadingRuns = true
 			cmds = append(cmds, a.loadRuns(msg.Repo.FullName))
 		}
 
@@ -232,15 +271,21 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, theme.Keys.Tab):
-		a.togglePanel()
+		a.cyclePanel()
 		return a, nil
 
 	case key.Matches(msg, theme.Keys.Refresh):
-		return a, a.refreshCurrent()
+		a.loadingRepos = true
+		a.loadingRuns = true
+		return a, tea.Batch(a.loadRepos(), a.refreshCurrent())
 
 	case key.Matches(msg, theme.Keys.Enter) || msg.String() == "l":
+		if a.activePanel == orgPanel {
+			// enter/l on org: move to repo panel
+			a.activePanel = repoPanel
+			return a, nil
+		}
 		if a.activePanel == repoPanel {
-			// l or enter on repo panel: select repo and focus run panel
 			a.activePanel = runPanel
 			return a, a.selectRepo()
 		}
@@ -253,6 +298,10 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case msg.String() == "h":
 		if a.activePanel == runPanel {
 			a.activePanel = repoPanel
+			return a, nil
+		}
+		if a.activePanel == repoPanel {
+			a.activePanel = orgPanel
 			return a, nil
 		}
 
@@ -290,6 +339,7 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, theme.Keys.Logs):
 		if run := a.runList.SelectedRun(); run != nil {
+			a.previousView = MainView
 			a.statusBar.SetMessage("Loading logs...", false)
 			return a, a.loadRunLog(run.ID)
 		}
@@ -315,13 +365,18 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Forward to active panel for navigation
-	if a.activePanel == repoPanel {
+	switch a.activePanel {
+	case orgPanel:
+		cmd := a.orgSelector.Update(msg)
+		cmds = append(cmds, cmd)
+	case repoPanel:
 		cmd := a.repoList.Update(msg)
 		cmds = append(cmds, cmd)
 		if repo := a.repoList.SelectedRepo(); repo != nil && repo.FullName != a.lastRepo {
+			a.loadingRuns = true
 			cmds = append(cmds, a.loadRuns(repo.FullName))
 		}
-	} else {
+	case runPanel:
 		cmd := a.runList.Update(msg)
 		cmds = append(cmds, cmd)
 	}
@@ -337,6 +392,7 @@ func (a App) updateDetailView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, theme.Keys.Logs) || msg.String() == "l":
 		if run := a.runList.SelectedRun(); run != nil {
+			a.previousView = DetailView
 			a.statusBar.SetMessage("Loading logs...", false)
 			return a, a.loadRunLog(run.ID)
 		}
@@ -368,18 +424,16 @@ func (a App) updateDetailView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Forward to runDetail for navigation (j/k scrolling)
 	cmd := a.runDetail.Update(msg)
 	return a, cmd
 }
 
 func (a App) updateLogView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, theme.Keys.Back) || msg.String() == "h" {
-		a.ActiveView = MainView
+		a.ActiveView = a.previousView
 		return a, nil
 	}
 
-	// Forward to logViewer for scrolling
 	cmd := a.logViewer.Update(msg)
 	return a, cmd
 }
@@ -389,7 +443,6 @@ func (a App) updateQuickSwitchView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		a.ActiveView = MainView
 		return a, nil
 	}
-	// Ctrl+K toggles quick switch closed (ctrl+[ is normalized to esc upstream)
 	if msg.String() == "ctrl+k" {
 		a.ActiveView = MainView
 		a.quickSwitch = nil
@@ -458,22 +511,44 @@ func (a App) View() tea.View {
 }
 
 func (a App) renderMainLayout() string {
-	repoWidth := a.width / 4
-	if repoWidth < 20 {
-		repoWidth = 20
+	leftWidth := a.width / 4
+	if leftWidth < 20 {
+		leftWidth = 20
 	}
-	runWidth := a.width - repoWidth - 2
-	panelHeight := a.height - 3
+	runWidth := a.width - leftWidth - 2
+	totalHeight := a.height - 3
 
-	a.repoList.SetSize(repoWidth, panelHeight)
+	// Left column: org selector (fixed height) + repo list (remaining)
+	orgHeight := min(a.orgSelector.OrgCount()+3, 8)
+	if orgHeight < 4 {
+		orgHeight = 4
+	}
+	repoHeight := totalHeight - orgHeight
+
+	a.orgSelector.SetSize(leftWidth, orgHeight)
+	a.orgSelector.SetFocused(a.activePanel == orgPanel)
+
+	a.repoList.SetSize(leftWidth, repoHeight)
 	a.repoList.SetFocused(a.activePanel == repoPanel)
-	a.runList.SetSize(runWidth, panelHeight)
+
+	a.runList.SetSize(runWidth, totalHeight)
 	a.runList.SetFocused(a.activePanel == runPanel)
 
-	panels := lipgloss.JoinHorizontal(lipgloss.Top,
-		a.repoList.View(),
-		a.runList.View(),
-	)
+	// Render left column with loading indicators
+	orgView := a.orgSelector.View()
+	repoView := a.repoList.View()
+	if a.loadingRepos {
+		repoView = a.renderLoadingPanel("Repositories", leftWidth, repoHeight, a.activePanel == repoPanel)
+	}
+
+	leftCol := lipgloss.JoinVertical(lipgloss.Left, orgView, repoView)
+
+	runView := a.runList.View()
+	if a.loadingRuns && a.runList.Empty() {
+		runView = a.renderLoadingPanel("Workflow Runs", runWidth, totalHeight, a.activePanel == runPanel)
+	}
+
+	panels := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, runView)
 
 	mainContent := lipgloss.JoinVertical(lipgloss.Left,
 		panels,
@@ -481,7 +556,6 @@ func (a App) renderMainLayout() string {
 		components.HelpBar(a.width, ""),
 	)
 
-	// Overlay dialogs on top of the main layout
 	switch {
 	case a.ActiveView == QuickSwitchView && a.quickSwitch != nil:
 		return a.renderOverlay(mainContent, a.quickSwitch.View())
@@ -494,8 +568,45 @@ func (a App) renderMainLayout() string {
 	}
 }
 
+func (a App) renderLoadingPanel(title string, width, height int, focused bool) string {
+	content := theme.TitleStyle.Render(title) + "\n\n"
+	content += "  " + a.spinner.View() + " Loading..."
+	style := theme.PanelStyle
+	if focused {
+		style = theme.ActivePanelStyle
+	}
+	return style.Width(width).Height(height).Render(content)
+}
+
 func (a App) renderOverlay(_ string, overlay string) string {
 	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, overlay)
+}
+
+// --- Helpers ---
+
+func (a *App) filterReposByOrg() {
+	if a.selectedOrg == "" {
+		a.repos = a.allRepos
+	} else {
+		a.repos = nil
+		for _, r := range a.allRepos {
+			if r.Owner == a.selectedOrg {
+				a.repos = append(a.repos, r)
+			}
+		}
+	}
+	a.repoList.SetRepos(a.repos)
+}
+
+func (a *App) cyclePanel() {
+	switch a.activePanel {
+	case orgPanel:
+		a.activePanel = repoPanel
+	case repoPanel:
+		a.activePanel = runPanel
+	case runPanel:
+		a.activePanel = orgPanel
+	}
 }
 
 // --- Commands ---
@@ -626,15 +737,8 @@ func (a *App) selectRepo() tea.Cmd {
 		return nil
 	}
 	a.activePanel = runPanel
+	a.loadingRuns = true
 	return a.loadRuns(repo.FullName)
-}
-
-func (a *App) togglePanel() {
-	if a.activePanel == repoPanel {
-		a.activePanel = runPanel
-	} else {
-		a.activePanel = repoPanel
-	}
 }
 
 func (a *App) tick() tea.Cmd {
