@@ -73,12 +73,12 @@ func (qs QuickSwitch) Update(msg tea.Msg) (QuickSwitch, tea.Cmd) {
 				return qs, func() tea.Msg { return QuickSwitchResultMsg{Repo: &repo} }
 			}
 			return qs, nil
-		case "up":
+		case "up", "ctrl+p":
 			if qs.cursor > 0 {
 				qs.cursor--
 			}
 			return qs, nil
-		case "down":
+		case "down", "ctrl+n":
 			if qs.cursor < len(qs.matches)-1 {
 				qs.cursor++
 			}

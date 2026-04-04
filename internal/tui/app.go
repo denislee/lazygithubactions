@@ -233,7 +233,7 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, theme.Keys.Refresh):
 		return a, a.refreshCurrent()
 
-	case key.Matches(msg, theme.Keys.Enter):
+	case key.Matches(msg, theme.Keys.Enter) || (msg.String() == "l" && a.activePanel == runPanel):
 		if a.activePanel == repoPanel {
 			return a, a.selectRepo()
 		}
@@ -242,6 +242,10 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			a.statusBar.SetMessage("Loading run details...", false)
 			return a, a.loadRunDetail(run.ID)
 		}
+
+	case msg.String() == "h" && a.activePanel == runPanel:
+		a.activePanel = repoPanel
+		return a, nil
 
 	case key.Matches(msg, theme.Keys.Trigger):
 		if a.lastRepo != "" {
@@ -318,11 +322,11 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 func (a App) updateDetailView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
-	case key.Matches(msg, theme.Keys.Back):
+	case key.Matches(msg, theme.Keys.Back) || msg.String() == "h":
 		a.ActiveView = MainView
 		return a, nil
 
-	case key.Matches(msg, theme.Keys.Logs):
+	case key.Matches(msg, theme.Keys.Logs) || msg.String() == "l":
 		if run := a.runList.SelectedRun(); run != nil {
 			a.statusBar.SetMessage("Loading logs...", false)
 			return a, a.loadRunLog(run.ID)
@@ -361,7 +365,7 @@ func (a App) updateDetailView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) updateLogView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if key.Matches(msg, theme.Keys.Back) {
+	if key.Matches(msg, theme.Keys.Back) || msg.String() == "h" {
 		a.ActiveView = MainView
 		return a, nil
 	}
