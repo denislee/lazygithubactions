@@ -54,6 +54,10 @@ func (r *RunList) SelectedRun() *models.WorkflowRun {
 func (r *RunList) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		pageSize := r.height - 3
+		if pageSize < 1 {
+			pageSize = 1
+		}
 		switch {
 		case key.Matches(msg, theme.Keys.Up):
 			if r.cursor > 0 {
@@ -62,6 +66,16 @@ func (r *RunList) Update(msg tea.Msg) tea.Cmd {
 		case key.Matches(msg, theme.Keys.Down):
 			if r.cursor < len(r.runs)-1 {
 				r.cursor++
+			}
+		case msg.String() == "ctrl+n":
+			r.cursor += pageSize
+			if r.cursor >= len(r.runs) {
+				r.cursor = len(r.runs) - 1
+			}
+		case msg.String() == "ctrl+p":
+			r.cursor -= pageSize
+			if r.cursor < 0 {
+				r.cursor = 0
 			}
 		}
 	}
