@@ -2,6 +2,7 @@ package components
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -17,47 +18,54 @@ type LogCopiedMsg struct {
 }
 
 var (
-	gutterStyleNormal = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
-	gutterStyleCursor = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAA00"))
-	lineStyleCursor   = lipgloss.NewStyle().Background(lipgloss.Color("#333355"))
-	lineStyleSelect   = lipgloss.NewStyle().Background(lipgloss.Color("#3A3A5C"))
-	sectionStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#00AAFF"))
-	timestampStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+	logLineNumStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
+	logCursorLineNumStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAA00")).Bold(true)
+	logSelectLineNumStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAA00"))
+	logCursorStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAA00")).Bold(true)
+	logSelectStyle        = lipgloss.NewStyle().Background(lipgloss.Color("#3A3A5C"))
+	logTimestampStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+	logSectionStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#00AAFF"))
+	logDimStyle           = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
+	logStatusBarBg        = lipgloss.NewStyle().Background(lipgloss.Color("#1a1a2e"))
+	logModeStyle          = lipgloss.NewStyle().Background(lipgloss.Color("#1a1a2e")).Foreground(lipgloss.Color("#FFAA00")).Bold(true)
+	logStatusText         = lipgloss.NewStyle().Background(lipgloss.Color("#1a1a2e")).Foreground(lipgloss.Color("#AAAAAA"))
+	logStatusPos          = lipgloss.NewStyle().Background(lipgloss.Color("#1a1a2e")).Foreground(lipgloss.Color("#FFFFFF"))
 )
 
+// Matches GitHub Actions timestamp like 2026-04-02T11:18:41.5794341Z
+var tsRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s*`)
+
 type logLine struct {
-	timestamp string // extracted timestamp (e.g. "2026-04-02T11:18:41")
-	message   string // log message without job/step prefix
-	raw       string // original line for clipboard copy
-	section   string // which job/step section this line belongs to
+	timestamp string
+	message   string
+	raw       string
+	section   string
 }
 
 type LogViewer struct {
 	title   string
-	content string // raw content for full copy
+	content string
 	lines   []logLine
 	width   int
 	height  int
 
-	cursor  int
-	yOffset int
-
-	visualMode  bool
-	selectStart int
+	cursor     int
+	scroll     int // first visible line
+	selectFrom int // -1 if no visual selection
 
 	gutterWidth int
 }
 
 func NewLogViewer() LogViewer {
-	return LogViewer{}
+	return LogViewer{selectFrom: -1}
 }
 
 func (l *LogViewer) SetContent(title, content string) {
 	l.title = title
 	l.content = content
-	l.visualMode = false
+	l.selectFrom = -1
 	l.cursor = 0
-	l.yOffset = 0
+	l.scroll = 0
 	l.parseContent(content)
 	l.gutterWidth = len(fmt.Sprintf("%d", len(l.lines))) + 1
 	if l.gutterWidth < 4 {
@@ -77,7 +85,6 @@ func (l *LogViewer) parseContent(content string) {
 			continue
 		}
 
-		// gh log format: "JobName\tStepName\tTimestamp Message"
 		parts := strings.SplitN(raw, "\t", 3)
 
 		if len(parts) == 3 {
@@ -87,7 +94,6 @@ func (l *LogViewer) parseContent(content string) {
 
 			currentSection = job + " / " + step
 
-			// Extract timestamp from message
 			ts, rest := extractTimestamp(msg)
 
 			l.lines = append(l.lines, logLine{
@@ -97,7 +103,6 @@ func (l *LogViewer) parseContent(content string) {
 				section:   currentSection,
 			})
 		} else {
-			// Not tab-delimited — show as-is
 			ts, rest := extractTimestamp(raw)
 			l.lines = append(l.lines, logLine{
 				timestamp: ts,
@@ -109,18 +114,13 @@ func (l *LogViewer) parseContent(content string) {
 	}
 }
 
-// extractTimestamp pulls a GitHub Actions timestamp from the start of a line.
-// Returns (short timestamp, remaining message).
 func extractTimestamp(s string) (string, string) {
-	// Format: 2026-04-02T11:18:41.5794341Z ...
 	if len(s) > 28 && s[4] == '-' && s[7] == '-' && s[10] == 'T' {
-		// Find the Z that ends the timestamp
 		zIdx := strings.IndexByte(s[11:], 'Z')
 		if zIdx > 0 {
-			zPos := 11 + zIdx + 1 // position after 'Z'
-			ts := s[11:19]        // just HH:MM:SS
-			rest := s[zPos:]
-			rest = strings.TrimLeft(rest, " ")
+			zPos := 11 + zIdx + 1
+			ts := s[11:19] // HH:MM:SS
+			rest := strings.TrimLeft(s[zPos:], " ")
 			return ts, rest
 		}
 	}
@@ -132,8 +132,9 @@ func (l *LogViewer) SetSize(w, h int) {
 	l.height = h
 }
 
-func (l *LogViewer) visibleHeight() int {
-	h := l.height - 3 // borders (2) + header line (1)
+func (l *LogViewer) viewHeight() int {
+	// Reserve: 2 border + 1 header + 1 status bar = 4
+	h := l.height - 4
 	if h < 1 {
 		return 1
 	}
@@ -141,15 +142,11 @@ func (l *LogViewer) visibleHeight() int {
 }
 
 func (l *LogViewer) ensureVisible() {
-	vh := l.visibleHeight()
-	if l.cursor < l.yOffset {
-		l.yOffset = l.cursor
-	}
-	if l.cursor >= l.yOffset+vh {
-		l.yOffset = l.cursor - vh + 1
-	}
-	if l.yOffset < 0 {
-		l.yOffset = 0
+	vh := l.viewHeight()
+	if l.cursor < l.scroll {
+		l.scroll = l.cursor
+	} else if l.cursor >= l.scroll+vh {
+		l.scroll = l.cursor - vh + 1
 	}
 }
 
@@ -168,189 +165,254 @@ func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		switch {
-		case msg.String() == "j" || msg.String() == "down":
+		switch msg.String() {
+		case "j", "down":
 			if l.cursor < last {
 				l.cursor++
 				l.ensureVisible()
 			}
-			return nil
 
-		case msg.String() == "k" || msg.String() == "up":
+		case "k", "up":
 			if l.cursor > 0 {
 				l.cursor--
 				l.ensureVisible()
 			}
-			return nil
 
-		case msg.String() == "ctrl+f" || msg.String() == "ctrl+n":
-			l.cursor += l.visibleHeight()
+		case "g":
+			l.cursor = 0
+			l.scroll = 0
+
+		case "G":
+			l.cursor = last
+			l.ensureVisible()
+
+		case "ctrl+d":
+			half := l.viewHeight() / 2
+			l.cursor += half
 			if l.cursor > last {
 				l.cursor = last
 			}
 			l.ensureVisible()
-			return nil
 
-		case msg.String() == "ctrl+b" || msg.String() == "ctrl+p":
-			l.cursor -= l.visibleHeight()
+		case "ctrl+f":
+			full := l.viewHeight()
+			l.cursor += full
+			if l.cursor > last {
+				l.cursor = last
+			}
+			l.ensureVisible()
+
+		case "ctrl+u":
+			half := l.viewHeight() / 2
+			l.cursor -= half
 			if l.cursor < 0 {
 				l.cursor = 0
 			}
 			l.ensureVisible()
-			return nil
 
-		case msg.String() == "g":
-			l.cursor = 0
-			l.yOffset = 0
-			return nil
-
-		case msg.String() == "G":
-			l.cursor = last
-			l.ensureVisible()
-			return nil
-
-		case msg.String() == "y" && !l.visualMode:
-			return l.copyToClipboard(l.content, len(l.lines))
-
-		case msg.String() == "v":
-			if l.visualMode {
-				return l.copySelection()
+		case "ctrl+b":
+			full := l.viewHeight()
+			l.cursor -= full
+			if l.cursor < 0 {
+				l.cursor = 0
 			}
-			l.visualMode = true
-			l.selectStart = l.cursor
-			return nil
+			l.ensureVisible()
 
-		case l.visualMode && msg.String() == "y":
-			return l.copySelection()
+		case "ctrl+n":
+			full := l.viewHeight()
+			l.cursor += full
+			if l.cursor > last {
+				l.cursor = last
+			}
+			l.ensureVisible()
 
-		case l.visualMode && msg.String() == "esc":
-			l.visualMode = false
-			return nil
+		case "ctrl+p":
+			full := l.viewHeight()
+			l.cursor -= full
+			if l.cursor < 0 {
+				l.cursor = 0
+			}
+			l.ensureVisible()
+
+		case "v":
+			if l.selectFrom != -1 {
+				l.selectFrom = -1 // toggle off
+			} else {
+				l.selectFrom = l.cursor
+			}
+
+		case "y":
+			text := l.selectedText()
+			count := 1
+			if l.selectFrom != -1 {
+				lo, hi := l.selectFrom, l.cursor
+				if lo > hi {
+					lo, hi = hi, lo
+				}
+				count = hi - lo + 1
+				l.selectFrom = -1
+			}
+			return func() tea.Msg {
+				err := clipboard.WriteAll(text)
+				return LogCopiedMsg{Lines: count, Err: err}
+			}
+
+		case "esc":
+			if l.selectFrom != -1 {
+				l.selectFrom = -1
+				return nil
+			}
 		}
 	}
 
 	return nil
 }
 
-func (l *LogViewer) copySelection() tea.Cmd {
-	start, end := l.selectStart, l.cursor
-	if start > end {
-		start, end = end, start
+func (l *LogViewer) selectedText() string {
+	if l.selectFrom == -1 {
+		// No selection — copy current line (raw)
+		if l.cursor >= 0 && l.cursor < len(l.lines) {
+			if l.lines[l.cursor].raw != "" {
+				return l.lines[l.cursor].raw
+			}
+			return l.lines[l.cursor].message
+		}
+		return ""
 	}
-	if start < 0 {
-		start = 0
+	lo, hi := l.selectFrom, l.cursor
+	if lo > hi {
+		lo, hi = hi, lo
 	}
-	if end >= len(l.lines) {
-		end = len(l.lines) - 1
+	if lo < 0 {
+		lo = 0
 	}
-
+	if hi >= len(l.lines) {
+		hi = len(l.lines) - 1
+	}
 	var sb strings.Builder
-	for i := start; i <= end; i++ {
+	for i := lo; i <= hi; i++ {
 		if l.lines[i].raw != "" {
 			sb.WriteString(l.lines[i].raw)
 		} else {
 			sb.WriteString(l.lines[i].message)
 		}
-		if i < end {
+		if i < hi {
 			sb.WriteString("\n")
 		}
 	}
-	count := end - start + 1
-	l.visualMode = false
-	return l.copyToClipboard(sb.String(), count)
-}
-
-func (l *LogViewer) copyToClipboard(text string, lineCount int) tea.Cmd {
-	return func() tea.Msg {
-		err := clipboard.WriteAll(text)
-		return LogCopiedMsg{Lines: lineCount, Err: err}
-	}
+	return sb.String()
 }
 
 func (l *LogViewer) View() string {
-	// Fixed title bar: title + line info + current section
+	// Fixed header: title + position + section
 	titlePart := theme.TitleStyle.Render("Logs: " + l.title)
 	lineInfo := theme.NormalItemStyle.Render(fmt.Sprintf(" [%d/%d]", l.cursor+1, len(l.lines)))
 
 	section := l.currentSection()
 	sectionPart := ""
 	if section != "" {
-		sectionPart = sectionStyle.Render("  ▸ " + section)
+		sectionPart = logSectionStyle.Render("  ▸ " + section)
 	}
 
-	var modeIndicator string
-	if l.visualMode {
-		start, end := l.selectStart, l.cursor
-		if start > end {
-			start, end = end, start
+	headerLine := titlePart + lineInfo + sectionPart
+
+	// Content area
+	vh := l.viewHeight()
+	contentWidth := l.width - 4 - l.gutterWidth - 10 // borders/padding - gutter - timestamp space
+
+	lo, hi := -1, -1
+	if l.selectFrom != -1 {
+		lo, hi = l.selectFrom, l.cursor
+		if lo > hi {
+			lo, hi = hi, lo
 		}
-		count := end - start + 1
-		modeIndicator = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#FFAA00")).
-			Bold(true).
-			Render(fmt.Sprintf("  VISUAL (%d lines)", count))
 	}
-
-	headerLine := titlePart + lineInfo + sectionPart + modeIndicator
-
-	// Render visible log lines
-	vh := l.visibleHeight()
-	contentWidth := l.width - 4 - l.gutterWidth - 10 // borders/padding - gutter - timestamp
 
 	var b strings.Builder
-	for i := l.yOffset; i < len(l.lines) && i < l.yOffset+vh; i++ {
+	end := l.scroll + vh
+	if end > len(l.lines) {
+		end = len(l.lines)
+	}
+
+	for i := l.scroll; i < end; i++ {
 		line := l.lines[i]
 
-		isSelected := l.visualMode && l.inSelection(i)
 		isCursor := i == l.cursor
+		isSelected := lo != -1 && i >= lo && i <= hi
 
-		lineNum := fmt.Sprintf("%*d ", l.gutterWidth-1, i+1)
+		num := fmt.Sprintf("%*d ", l.gutterWidth-1, i+1)
+
 		ts := ""
 		if line.timestamp != "" {
-			ts = timestampStyle.Render(line.timestamp) + " "
+			ts = logTimestampStyle.Render(line.timestamp) + " "
 		}
 
 		msg := line.message
-		if len(msg) > contentWidth && contentWidth > 0 {
+		if contentWidth > 0 && len(msg) > contentWidth {
 			msg = msg[:contentWidth]
 		}
 
-		var gutter string
 		if isCursor {
-			gutter = gutterStyleCursor.Render(lineNum)
-		} else {
-			gutter = gutterStyleNormal.Render(lineNum)
-		}
-
-		if isCursor && isSelected {
-			b.WriteString(gutter + ts + lineStyleSelect.Render(msg))
-		} else if isCursor {
-			b.WriteString(gutter + ts + lineStyleCursor.Render(msg))
+			b.WriteString(logCursorLineNumStyle.Render(num))
+			b.WriteString(ts)
+			if isSelected {
+				b.WriteString(logSelectStyle.Render(msg))
+			} else {
+				b.WriteString(logCursorStyle.Render(msg))
+			}
 		} else if isSelected {
-			b.WriteString(gutter + ts + lineStyleSelect.Render(msg))
+			b.WriteString(logSelectLineNumStyle.Render(num))
+			b.WriteString(ts)
+			b.WriteString(logSelectStyle.Render(msg))
 		} else {
-			b.WriteString(gutter + ts + msg)
+			b.WriteString(logLineNumStyle.Render(num))
+			b.WriteString(ts)
+			b.WriteString(msg)
 		}
 		b.WriteString("\n")
 	}
 
+	// Pad remaining with ~ lines
+	rendered := end - l.scroll
+	for rendered < vh {
+		b.WriteString(logLineNumStyle.Render(strings.Repeat(" ", l.gutterWidth)))
+		b.WriteString(logDimStyle.Render("~"))
+		b.WriteString("\n")
+		rendered++
+	}
+
+	// Status bar
+	var mode string
+	if l.selectFrom != -1 {
+		mode = " VISUAL "
+	} else {
+		mode = " NORMAL "
+	}
+
+	pos := fmt.Sprintf(" %d/%d ", l.cursor+1, len(l.lines))
+	help := " [j/k]move [ctrl+d/u]half [ctrl+f/b]page [v]isual [y]ank [g/G]top/bot [h]back "
+
+	left := logModeStyle.Render(mode)
+	mid := logStatusText.Render(help)
+	right := logStatusPos.Render(pos)
+	gap := l.width - 4 - lipgloss.Width(left) - lipgloss.Width(mid) - lipgloss.Width(right)
+	if gap < 0 {
+		gap = 0
+	}
+	pad := logStatusBarBg.Width(gap).Render("")
+	bar := logStatusBarBg.Width(l.width - 4).Render(left + mid + pad + right)
+
 	return theme.ActivePanelStyle.Width(l.width).Height(l.height).Render(
-		headerLine + "\n" + b.String(),
+		headerLine + "\n" + b.String() + bar,
 	)
 }
 
-func (l *LogViewer) inSelection(line int) bool {
-	start, end := l.selectStart, l.cursor
-	if start > end {
-		start, end = end, start
-	}
-	return line >= start && line <= end
+// InVisualMode reports whether visual selection is active.
+func (l *LogViewer) InVisualMode() bool {
+	return l.selectFrom != -1
 }
 
-// HelpText returns context-sensitive help for the status bar.
+// HelpText returns help for the app-level status bar (kept minimal since pager has its own).
 func (l *LogViewer) HelpText() string {
-	if l.visualMode {
-		return "j/k:select  y:copy  esc:cancel  ctrl+f/b:page  g/G:top/bottom"
-	}
-	return "j/k:navigate  ctrl+f/b:page  g/G:top/bottom  y:copy all  v:visual select  h:back"
+	return ""
 }

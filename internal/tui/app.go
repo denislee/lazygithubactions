@@ -468,7 +468,12 @@ func (a App) updateDetailView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) updateLogView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if key.Matches(msg, theme.Keys.Back) || msg.String() == "h" {
+	// h always goes back; esc goes back only if not in visual mode
+	if msg.String() == "h" {
+		a.ActiveView = a.previousView
+		return a, nil
+	}
+	if key.Matches(msg, theme.Keys.Back) && !a.logViewer.InVisualMode() {
 		a.ActiveView = a.previousView
 		return a, nil
 	}
@@ -533,12 +538,8 @@ func (a App) View() tea.View {
 		)
 
 	case LogView:
-		a.logViewer.SetSize(a.width, a.height-2)
-		content = lipgloss.JoinVertical(lipgloss.Left,
-			a.logViewer.View(),
-			a.statusBar.View(),
-			theme.HelpBarStyle.Width(a.width).Render(a.logViewer.HelpText()),
-		)
+		a.logViewer.SetSize(a.width, a.height)
+		content = a.logViewer.View()
 
 	default: // MainView and overlay views
 		content = a.renderMainLayout()
