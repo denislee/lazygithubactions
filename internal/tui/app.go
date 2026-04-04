@@ -522,7 +522,7 @@ func (a App) View() tea.View {
 		content = lipgloss.JoinVertical(lipgloss.Left,
 			a.logViewer.View(),
 			a.statusBar.View(),
-			components.HelpBar(a.width, "log"),
+			theme.HelpBarStyle.Width(a.width).Render(a.logViewer.HelpText()),
 		)
 
 	default: // MainView and overlay views

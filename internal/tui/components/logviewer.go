@@ -60,7 +60,7 @@ func (l *LogViewer) SetSize(w, h int) {
 		l.ready = true
 	}
 	l.viewport.SetWidth(w - 4)
-	l.viewport.SetHeight(h - 6)
+	l.viewport.SetHeight(h - 4)
 }
 
 func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
@@ -226,17 +226,17 @@ func (l *LogViewer) View() string {
 			Render(fmt.Sprintf(" VISUAL (%d lines)", count))
 	}
 
-	footer := theme.HelpBarStyle.Render(l.helpText())
 	body := ""
 	if l.ready {
 		body = l.viewport.View()
 	}
 	return theme.ActivePanelStyle.Width(l.width).Height(l.height).Render(
-		header + theme.NormalItemStyle.Render(lineInfo) + modeIndicator + "\n" + body + "\n" + footer,
+		header + theme.NormalItemStyle.Render(lineInfo) + modeIndicator + "\n" + body,
 	)
 }
 
-func (l *LogViewer) helpText() string {
+// HelpText returns context-sensitive help for the status bar.
+func (l *LogViewer) HelpText() string {
 	if l.visualMode {
 		return "j/k:select  y:copy  esc:cancel  ctrl+f/b:page  g/G:top/bottom"
 	}
