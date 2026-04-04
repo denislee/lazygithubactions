@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
@@ -17,20 +16,28 @@ type LogCopiedMsg struct {
 	Err   error
 }
 
-type LogViewer struct {
-	viewport viewport.Model
-	title    string
-	content  string
-	lines    []string
-	width    int
-	height   int
-	ready    bool
+var (
+	gutterStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
+	cursorGutter   = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFAA00"))
+	cursorLine     = lipgloss.NewStyle().Background(lipgloss.Color("#333355"))
+	selectionStyle = lipgloss.NewStyle().Background(lipgloss.Color("#3A3A5C"))
+)
 
-	cursorLine int // always tracked, visible as line indicator
+type LogViewer struct {
+	title   string
+	content string
+	lines   []string
+	width   int
+	height  int
+
+	cursor  int // current cursor line
+	yOffset int // first visible line
 
 	// Visual selection mode
 	visualMode  bool
 	selectStart int
+
+	gutterWidth int // width of line number column
 }
 
 func NewLogViewer() LogViewer {
@@ -42,94 +49,91 @@ func (l *LogViewer) SetContent(title, content string) {
 	l.content = content
 	l.lines = strings.Split(content, "\n")
 	l.visualMode = false
-	l.cursorLine = 0
-	if !l.ready {
-		l.viewport = viewport.New()
-		l.ready = true
+	l.cursor = 0
+	l.yOffset = 0
+	l.gutterWidth = len(fmt.Sprintf("%d", len(l.lines))) + 1 // digits + space
+	if l.gutterWidth < 4 {
+		l.gutterWidth = 4
 	}
-	l.viewport.SetContent(content)
-	l.viewport.GotoTop()
-	l.updateLineStyles()
 }
 
 func (l *LogViewer) SetSize(w, h int) {
 	l.width = w
 	l.height = h
-	if !l.ready {
-		l.viewport = viewport.New()
-		l.ready = true
+}
+
+func (l *LogViewer) visibleHeight() int {
+	h := l.height - 4 // borders (2) + header (1) + padding (1)
+	if h < 1 {
+		return 1
 	}
-	l.viewport.SetWidth(w - 4)
-	l.viewport.SetHeight(h - 4)
+	return h
+}
+
+// ensureVisible scrolls the viewport just enough to keep the cursor visible.
+func (l *LogViewer) ensureVisible() {
+	vh := l.visibleHeight()
+	if l.cursor < l.yOffset {
+		l.yOffset = l.cursor
+	}
+	if l.cursor >= l.yOffset+vh {
+		l.yOffset = l.cursor - vh + 1
+	}
+	if l.yOffset < 0 {
+		l.yOffset = 0
+	}
 }
 
 func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
-	if !l.ready {
+	if len(l.lines) == 0 {
 		return nil
 	}
+	last := len(l.lines) - 1
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		switch {
-		// Line-by-line navigation (always active)
+		// Line-by-line navigation
 		case msg.String() == "j" || msg.String() == "down":
-			if l.cursorLine < len(l.lines)-1 {
-				l.cursorLine++
-				if l.cursorLine >= l.viewport.YOffset()+l.viewport.Height() {
-					l.viewport.ScrollDown(1)
-				}
-				l.updateLineStyles()
+			if l.cursor < last {
+				l.cursor++
+				l.ensureVisible()
 			}
 			return nil
 
 		case msg.String() == "k" || msg.String() == "up":
-			if l.cursorLine > 0 {
-				l.cursorLine--
-				if l.cursorLine < l.viewport.YOffset() {
-					l.viewport.ScrollUp(1)
-				}
-				l.updateLineStyles()
+			if l.cursor > 0 {
+				l.cursor--
+				l.ensureVisible()
 			}
 			return nil
 
-		// Page navigation — move cursor by a page, scroll only to keep it visible
+		// Page navigation
 		case msg.String() == "ctrl+f" || msg.String() == "ctrl+n":
-			h := l.viewport.Height()
-			l.cursorLine += h
-			if l.cursorLine >= len(l.lines) {
-				l.cursorLine = len(l.lines) - 1
+			l.cursor += l.visibleHeight()
+			if l.cursor > last {
+				l.cursor = last
 			}
-			// Scroll so cursor is at the top of the viewport
-			l.viewport.SetYOffset(l.cursorLine)
-			l.updateLineStyles()
+			l.ensureVisible()
 			return nil
 
 		case msg.String() == "ctrl+b" || msg.String() == "ctrl+p":
-			h := l.viewport.Height()
-			l.cursorLine -= h
-			if l.cursorLine < 0 {
-				l.cursorLine = 0
+			l.cursor -= l.visibleHeight()
+			if l.cursor < 0 {
+				l.cursor = 0
 			}
-			// Scroll so cursor is at the bottom of the viewport
-			offset := l.cursorLine - h + 1
-			if offset < 0 {
-				offset = 0
-			}
-			l.viewport.SetYOffset(offset)
-			l.updateLineStyles()
+			l.ensureVisible()
 			return nil
 
 		// Go to top/bottom
 		case msg.String() == "g":
-			l.cursorLine = 0
-			l.viewport.GotoTop()
-			l.updateLineStyles()
+			l.cursor = 0
+			l.yOffset = 0
 			return nil
 
 		case msg.String() == "G":
-			l.cursorLine = len(l.lines) - 1
-			l.viewport.GotoBottom()
-			l.updateLineStyles()
+			l.cursor = last
+			l.ensureVisible()
 			return nil
 
 		// Copy entire log
@@ -142,8 +146,7 @@ func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
 				return l.copySelection()
 			}
 			l.visualMode = true
-			l.selectStart = l.cursorLine
-			l.updateLineStyles()
+			l.selectStart = l.cursor
 			return nil
 
 		case l.visualMode && msg.String() == "y":
@@ -151,7 +154,6 @@ func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
 
 		case l.visualMode && msg.String() == "esc":
 			l.visualMode = false
-			l.updateLineStyles()
 			return nil
 		}
 	}
@@ -159,38 +161,8 @@ func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (l *LogViewer) updateLineStyles() {
-	cursor := l.cursorLine
-	visualMode := l.visualMode
-	selectStart := l.selectStart
-
-	cursorStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color("#333355")).
-		Foreground(lipgloss.Color("#FFFFFF"))
-
-	selStyle := lipgloss.NewStyle().
-		Background(lipgloss.Color("#3A3A5C")).
-		Foreground(lipgloss.Color("#FFFFFF"))
-
-	l.viewport.StyleLineFunc = func(line int) lipgloss.Style {
-		if visualMode {
-			start, end := selectStart, cursor
-			if start > end {
-				start, end = end, start
-			}
-			if line >= start && line <= end {
-				return selStyle
-			}
-		}
-		if line == cursor {
-			return cursorStyle
-		}
-		return lipgloss.NewStyle()
-	}
-}
-
 func (l *LogViewer) copySelection() tea.Cmd {
-	start, end := l.selectStart, l.cursorLine
+	start, end := l.selectStart, l.cursor
 	if start > end {
 		start, end = end, start
 	}
@@ -205,7 +177,6 @@ func (l *LogViewer) copySelection() tea.Cmd {
 	count := end - start + 1
 
 	l.visualMode = false
-	l.updateLineStyles()
 
 	return l.copyToClipboard(selected, count)
 }
@@ -220,10 +191,10 @@ func (l *LogViewer) copyToClipboard(text string, lineCount int) tea.Cmd {
 func (l *LogViewer) View() string {
 	header := theme.TitleStyle.Render("Logs: " + l.title)
 
-	lineInfo := fmt.Sprintf(" [%d/%d]", l.cursorLine+1, len(l.lines))
+	lineInfo := fmt.Sprintf(" [%d/%d]", l.cursor+1, len(l.lines))
 	var modeIndicator string
 	if l.visualMode {
-		start, end := l.selectStart, l.cursorLine
+		start, end := l.selectStart, l.cursor
 		if start > end {
 			start, end = end, start
 		}
@@ -234,13 +205,45 @@ func (l *LogViewer) View() string {
 			Render(fmt.Sprintf(" VISUAL (%d lines)", count))
 	}
 
-	body := ""
-	if l.ready {
-		body = l.viewport.View()
+	vh := l.visibleHeight()
+	contentWidth := l.width - 4 - l.gutterWidth // borders/padding - gutter
+
+	var b strings.Builder
+	for i := l.yOffset; i < len(l.lines) && i < l.yOffset+vh; i++ {
+		lineText := l.lines[i]
+		if len(lineText) > contentWidth {
+			lineText = lineText[:contentWidth]
+		}
+
+		// Line number gutter
+		lineNum := fmt.Sprintf("%*d ", l.gutterWidth-1, i+1)
+
+		isSelected := l.visualMode && l.inSelection(i)
+		isCursor := i == l.cursor
+
+		if isCursor && isSelected {
+			b.WriteString(cursorGutter.Render(lineNum) + selectionStyle.Render(lineText))
+		} else if isCursor {
+			b.WriteString(cursorGutter.Render(lineNum) + cursorLine.Render(lineText))
+		} else if isSelected {
+			b.WriteString(gutterStyle.Render(lineNum) + selectionStyle.Render(lineText))
+		} else {
+			b.WriteString(gutterStyle.Render(lineNum) + lineText)
+		}
+		b.WriteString("\n")
 	}
+
 	return theme.ActivePanelStyle.Width(l.width).Height(l.height).Render(
-		header + theme.NormalItemStyle.Render(lineInfo) + modeIndicator + "\n" + body,
+		header + theme.NormalItemStyle.Render(lineInfo) + modeIndicator + "\n" + b.String(),
 	)
+}
+
+func (l *LogViewer) inSelection(line int) bool {
+	start, end := l.selectStart, l.cursor
+	if start > end {
+		start, end = end, start
+	}
+	return line >= start && line <= end
 }
 
 // HelpText returns context-sensitive help for the status bar.
