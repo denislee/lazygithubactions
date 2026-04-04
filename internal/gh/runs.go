@@ -3,19 +3,76 @@ package gh
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/dns/lazygithubactions/internal/models"
 )
 
+// apiRun matches the GitHub REST API workflow run object.
+type apiRun struct {
+	ID           int64  `json:"id"`
+	Name         string `json:"name"`
+	DisplayTitle string `json:"display_title"`
+	Status       string `json:"status"`
+	Conclusion   *string `json:"conclusion"`
+	HeadBranch   string `json:"head_branch"`
+	Event        string `json:"event"`
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+	HTMLURL      string `json:"html_url"`
+	RunAttempt   int    `json:"run_attempt"`
+	Actor        *struct {
+		Login string `json:"login"`
+	} `json:"triggering_actor"`
+}
+
 func (c *Client) ListRuns(ctx context.Context, repo string) ([]models.WorkflowRun, error) {
-	var runs []models.WorkflowRun
-	err := c.runJSON(ctx, &runs, "run", "list",
-		"-R", repo,
-		"--json", "databaseId,name,displayTitle,status,conclusion,headBranch,event,createdAt,updatedAt,url,workflowName,attempt",
-		"--limit", "30",
+	out, err := c.run(ctx, "api",
+		fmt.Sprintf("/repos/%s/actions/runs?per_page=30", repo),
 	)
-	return runs, err
+	if err != nil {
+		return nil, err
+	}
+
+	var resp struct {
+		Runs []apiRun `json:"workflow_runs"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return nil, err
+	}
+
+	runs := make([]models.WorkflowRun, len(resp.Runs))
+	for i, r := range resp.Runs {
+		conclusion := ""
+		if r.Conclusion != nil {
+			conclusion = *r.Conclusion
+		}
+		actor := ""
+		if r.Actor != nil {
+			actor = r.Actor.Login
+		}
+		created, _ := time.Parse(time.RFC3339, r.CreatedAt)
+		updated, _ := time.Parse(time.RFC3339, r.UpdatedAt)
+
+		runs[i] = models.WorkflowRun{
+			ID:           r.ID,
+			Name:         r.Name,
+			DisplayTitle: r.DisplayTitle,
+			Status:       r.Status,
+			Conclusion:   conclusion,
+			Branch:       r.HeadBranch,
+			Event:        r.Event,
+			CreatedAt:    created,
+			UpdatedAt:    updated,
+			URL:          r.HTMLURL,
+			WorkflowName: r.Name,
+			Attempt:      r.RunAttempt,
+			Actor:        actor,
+		}
+	}
+	return runs, nil
 }
 
 func (c *Client) ViewRun(ctx context.Context, repo string, runID int64) (*models.RunDetail, error) {

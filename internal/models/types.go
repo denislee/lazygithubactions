@@ -22,6 +22,7 @@ type WorkflowRun struct {
 	URL          string    `json:"url"`
 	WorkflowName string   `json:"workflowName"`
 	Attempt      int       `json:"attempt"`
+	Actor        string    `json:"actor"` // username who triggered
 }
 
 type Job struct {

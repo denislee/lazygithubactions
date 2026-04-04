@@ -144,22 +144,32 @@ func (r *RunList) View() string {
 	statusCol := 0 // only in full mode
 
 	if r.Compact {
-		// Compact columns: name | branch | duration | age
-		durCol := 8 // e.g. "10m10s"
+		// Compact columns: name | branch | actor | duration | age
+		durCol := 8
+		actorCol := 0
 
-		// Auto-size branch column from visible runs
+		// Auto-size branch and actor columns from visible runs
 		branchCol := 0
 		for i := start; i < len(r.runs) && i < start+visibleRuns; i++ {
 			if len(r.runs[i].Branch) > branchCol {
 				branchCol = len(r.runs[i].Branch)
 			}
+			if len(r.runs[i].Actor) > actorCol {
+				actorCol = len(r.runs[i].Actor)
+			}
 		}
 		branchCol += 1
-		maxBranch := avail - agoCol - durCol - 14 // reserve name + gaps
+		actorCol += 1
+		if actorCol > 16 {
+			actorCol = 16
+		}
+
+		fixedCols := agoCol + durCol + actorCol + 4 // 4 gaps
+		maxBranch := avail - fixedCols - 10          // reserve name
 		if branchCol > maxBranch {
 			branchCol = maxBranch
 		}
-		nameCol := avail - branchCol - durCol - agoCol - 3 // 3 gaps
+		nameCol := avail - branchCol - fixedCols
 		if nameCol < 8 {
 			nameCol = 8
 		}
@@ -176,15 +186,15 @@ func (r *RunList) View() string {
 				prefix = "> "
 			}
 
-			// Pad raw strings first, then apply styles to avoid ANSI width issues
 			durPad := fmt.Sprintf("%*s", durCol, dur)
 			agoPad := fmt.Sprintf("%*s", agoCol, ago)
 
-			line := fmt.Sprintf("%s%s %-*s %-*s %s %s",
+			line := fmt.Sprintf("%s%s %-*s %-*s %-*s %s %s",
 				prefix,
 				stStyle.Render(icon),
 				nameCol, truncate(run.WorkflowName, nameCol),
 				branchCol, truncate(run.Branch, branchCol),
+				actorCol, dimStyle.Render(truncate(run.Actor, actorCol-1)),
 				dimStyle.Render(durPad),
 				agoPad,
 			)

@@ -38,7 +38,7 @@ var Keys = KeyMap{
 	Enter:       key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
 	Back:        key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 	Refresh:     key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh")),
-	Trigger:     key.NewBinding(key.WithKeys("T"), key.WithHelp("T", "trigger")),
+	Trigger:     key.NewBinding(key.WithKeys("T", "t"), key.WithHelp("t", "trigger")),
 	Cancel:      key.NewBinding(key.WithKeys("C"), key.WithHelp("C", "cancel")),
 	Rerun:       key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "rerun failed")),
 	Logs:        key.NewBinding(key.WithKeys("L"), key.WithHelp("L", "view logs")),
