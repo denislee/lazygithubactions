@@ -3,37 +3,20 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/dns/lazygithubactions/internal/tui"
 )
 
-type model struct {
-	msg string
-}
-
-func (m model) Init() tea.Cmd {
-	return nil
-}
-
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-		}
-	}
-	return m, nil
-}
-
-func (m model) View() tea.View {
-	v := tea.NewView(fmt.Sprintf("\n  %s\n\n  Press q to quit.\n", m.msg))
-	v.AltScreen = true
-	return v
-}
-
 func main() {
-	p := tea.NewProgram(model{msg: "lazygithubactions"})
+	if err := exec.Command("gh", "auth", "status").Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "Error: gh CLI is not authenticated. Run 'gh auth login' first.")
+		os.Exit(1)
+	}
+
+	app := tui.NewApp()
+	p := tea.NewProgram(app)
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

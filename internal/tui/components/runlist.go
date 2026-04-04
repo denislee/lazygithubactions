@@ -8,7 +8,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"github.com/dns/lazygithubactions/internal/models"
-	"github.com/dns/lazygithubactions/internal/tui"
+	"github.com/dns/lazygithubactions/internal/tui/theme"
 )
 
 type RunList struct {
@@ -55,11 +55,11 @@ func (r *RunList) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		switch {
-		case key.Matches(msg, tui.Keys.Up):
+		case key.Matches(msg, theme.Keys.Up):
 			if r.cursor > 0 {
 				r.cursor--
 			}
-		case key.Matches(msg, tui.Keys.Down):
+		case key.Matches(msg, theme.Keys.Down):
 			if r.cursor < len(r.runs)-1 {
 				r.cursor++
 			}
@@ -70,15 +70,15 @@ func (r *RunList) Update(msg tea.Msg) tea.Cmd {
 
 func (r *RunList) View() string {
 	var b strings.Builder
-	title := tui.TitleStyle().Render(fmt.Sprintf("Workflow Runs — %s", r.repo))
+	title := theme.TitleStyle.Render(fmt.Sprintf("Workflow Runs — %s", r.repo))
 	b.WriteString(title + "\n")
 
 	if len(r.runs) == 0 {
-		b.WriteString(tui.NormalItemStyle().Render("  No workflow runs"))
+		b.WriteString(theme.NormalItemStyle.Render("  No workflow runs"))
 		content := b.String()
-		style := tui.PanelStyle()
+		style := theme.PanelStyle
 		if r.focused {
-			style = tui.ActivePanelStyle()
+			style = theme.ActivePanelStyle
 		}
 		return style.Width(r.width).Height(r.height).Render(content)
 	}
@@ -95,8 +95,8 @@ func (r *RunList) View() string {
 
 	for i := start; i < len(r.runs) && i < start+visibleHeight; i++ {
 		run := r.runs[i]
-		icon := tui.StatusIcon(run.Status, run.Conclusion)
-		stStyle := tui.StatusStyle(run.Status, run.Conclusion)
+		icon := theme.StatusIcon(run.Status, run.Conclusion)
+		stStyle := theme.StatusStyle(run.Status, run.Conclusion)
 		status := stStyle.Render(icon)
 
 		ago := timeAgo(run.UpdatedAt)
@@ -104,19 +104,19 @@ func (r *RunList) View() string {
 			status, run.ID, truncate(run.WorkflowName, 20), truncate(run.Branch, 12), ago)
 
 		if i == r.cursor && r.focused {
-			line = tui.SelectedItemStyle().Render("> " + line)
+			line = theme.SelectedItemStyle.Render("> " + line)
 		} else if i == r.cursor {
-			line = tui.NormalItemStyle().Render("> " + line)
+			line = theme.NormalItemStyle.Render("> " + line)
 		} else {
-			line = tui.NormalItemStyle().Render("  " + line)
+			line = theme.NormalItemStyle.Render("  " + line)
 		}
 		b.WriteString(line + "\n")
 	}
 
 	content := b.String()
-	style := tui.PanelStyle()
+	style := theme.PanelStyle
 	if r.focused {
-		style = tui.ActivePanelStyle()
+		style = theme.ActivePanelStyle
 	}
 	return style.Width(r.width).Height(r.height).Render(content)
 }

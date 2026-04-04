@@ -6,7 +6,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"github.com/dns/lazygithubactions/internal/models"
-	"github.com/dns/lazygithubactions/internal/tui"
+	"github.com/dns/lazygithubactions/internal/tui/theme"
 )
 
 type RepoList struct {
@@ -71,11 +71,11 @@ func (r *RepoList) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		switch {
-		case key.Matches(msg, tui.Keys.Up):
+		case key.Matches(msg, theme.Keys.Up):
 			if r.cursor > 0 {
 				r.cursor--
 			}
-		case key.Matches(msg, tui.Keys.Down):
+		case key.Matches(msg, theme.Keys.Down):
 			if r.cursor < len(r.filtered)-1 {
 				r.cursor++
 			}
@@ -86,7 +86,7 @@ func (r *RepoList) Update(msg tea.Msg) tea.Cmd {
 
 func (r *RepoList) View() string {
 	var b strings.Builder
-	title := tui.TitleStyle().Render("Repositories")
+	title := theme.TitleStyle.Render("Repositories")
 	b.WriteString(title + "\n")
 
 	visibleHeight := r.height - 3
@@ -103,23 +103,23 @@ func (r *RepoList) View() string {
 		repo := r.filtered[i]
 		line := repo.Name
 		if i == r.cursor && r.focused {
-			line = tui.SelectedItemStyle().Render("> " + line)
+			line = theme.SelectedItemStyle.Render("> " + line)
 		} else if i == r.cursor {
-			line = tui.NormalItemStyle().Render("> " + line)
+			line = theme.NormalItemStyle.Render("> " + line)
 		} else {
-			line = tui.NormalItemStyle().Render("  " + line)
+			line = theme.NormalItemStyle.Render("  " + line)
 		}
 		b.WriteString(line + "\n")
 	}
 
 	if len(r.filtered) == 0 {
-		b.WriteString(tui.NormalItemStyle().Render("  No repositories found"))
+		b.WriteString(theme.NormalItemStyle.Render("  No repositories found"))
 	}
 
 	content := b.String()
-	style := tui.PanelStyle()
+	style := theme.PanelStyle
 	if r.focused {
-		style = tui.ActivePanelStyle()
+		style = theme.ActivePanelStyle
 	}
 	return style.Width(r.width).Height(r.height).Render(content)
 }
