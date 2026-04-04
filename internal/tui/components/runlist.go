@@ -145,8 +145,19 @@ func (r *RunList) View() string {
 
 	if r.Compact {
 		// Compact columns: name | branch | age
-		branchCol := avail / 2
-		nameCol := avail - branchCol - agoCol - 2 // 2 for gaps
+		// Find the longest branch name in visible runs to size the column
+		branchCol := 0
+		for i := start; i < len(r.runs) && i < start+visibleRuns; i++ {
+			if len(r.runs[i].Branch) > branchCol {
+				branchCol = len(r.runs[i].Branch)
+			}
+		}
+		branchCol += 1 // padding
+		maxBranch := avail - agoCol - 12 // reserve at least 10 for name + 2 gaps
+		if branchCol > maxBranch {
+			branchCol = maxBranch
+		}
+		nameCol := avail - branchCol - agoCol - 2
 		if nameCol < 8 {
 			nameCol = 8
 		}
