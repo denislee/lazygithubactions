@@ -1,0 +1,125 @@
+package components
+
+import (
+	"strings"
+
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"github.com/dns/lazygithubactions/internal/models"
+	"github.com/dns/lazygithubactions/internal/tui"
+)
+
+type RepoList struct {
+	repos    []models.Repo
+	cursor   int
+	width    int
+	height   int
+	focused  bool
+	filter   string
+	filtered []models.Repo
+}
+
+func NewRepoList() RepoList {
+	return RepoList{}
+}
+
+func (r *RepoList) SetRepos(repos []models.Repo) {
+	r.repos = repos
+	r.applyFilter()
+}
+
+func (r *RepoList) SetSize(w, h int) {
+	r.width = w
+	r.height = h
+}
+
+func (r *RepoList) SetFocused(f bool) {
+	r.focused = f
+}
+
+func (r *RepoList) SelectedRepo() *models.Repo {
+	if len(r.filtered) == 0 {
+		return nil
+	}
+	if r.cursor >= len(r.filtered) {
+		r.cursor = len(r.filtered) - 1
+	}
+	return &r.filtered[r.cursor]
+}
+
+func (r *RepoList) SetFilter(f string) {
+	r.filter = f
+	r.applyFilter()
+	r.cursor = 0
+}
+
+func (r *RepoList) applyFilter() {
+	if r.filter == "" {
+		r.filtered = r.repos
+		return
+	}
+	lower := strings.ToLower(r.filter)
+	r.filtered = nil
+	for _, repo := range r.repos {
+		if strings.Contains(strings.ToLower(repo.FullName), lower) {
+			r.filtered = append(r.filtered, repo)
+		}
+	}
+}
+
+func (r *RepoList) Update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		switch {
+		case key.Matches(msg, tui.Keys.Up):
+			if r.cursor > 0 {
+				r.cursor--
+			}
+		case key.Matches(msg, tui.Keys.Down):
+			if r.cursor < len(r.filtered)-1 {
+				r.cursor++
+			}
+		}
+	}
+	return nil
+}
+
+func (r *RepoList) View() string {
+	var b strings.Builder
+	title := tui.TitleStyle().Render("Repositories")
+	b.WriteString(title + "\n")
+
+	visibleHeight := r.height - 3
+	if visibleHeight < 1 {
+		visibleHeight = 1
+	}
+
+	start := 0
+	if r.cursor >= visibleHeight {
+		start = r.cursor - visibleHeight + 1
+	}
+
+	for i := start; i < len(r.filtered) && i < start+visibleHeight; i++ {
+		repo := r.filtered[i]
+		line := repo.Name
+		if i == r.cursor && r.focused {
+			line = tui.SelectedItemStyle().Render("> " + line)
+		} else if i == r.cursor {
+			line = tui.NormalItemStyle().Render("> " + line)
+		} else {
+			line = tui.NormalItemStyle().Render("  " + line)
+		}
+		b.WriteString(line + "\n")
+	}
+
+	if len(r.filtered) == 0 {
+		b.WriteString(tui.NormalItemStyle().Render("  No repositories found"))
+	}
+
+	content := b.String()
+	style := tui.PanelStyle()
+	if r.focused {
+		style = tui.ActivePanelStyle()
+	}
+	return style.Width(r.width).Height(r.height).Render(content)
+}
