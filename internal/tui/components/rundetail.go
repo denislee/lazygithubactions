@@ -96,12 +96,12 @@ func (d *RunDetail) Update(msg tea.Msg) tea.Cmd {
 			if d.cursor < total-1 {
 				d.cursor++
 			}
-		case msg.String() == "ctrl+n" || msg.String() == "ctrl+f":
+		case key.Matches(msg, theme.PageDown, theme.NextPage):
 			d.cursor += pageSize
 			if d.cursor >= total {
 				d.cursor = total - 1
 			}
-		case msg.String() == "ctrl+p" || msg.String() == "ctrl+b":
+		case key.Matches(msg, theme.PageUp, theme.PrevPage):
 			d.cursor -= pageSize
 			if d.cursor < 0 {
 				d.cursor = 0

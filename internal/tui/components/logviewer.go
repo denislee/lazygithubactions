@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
@@ -165,28 +166,28 @@ func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		switch msg.String() {
-		case "j", "down":
+		switch {
+		case key.Matches(msg, theme.Keys.Down):
 			if l.cursor < last {
 				l.cursor++
 				l.ensureVisible()
 			}
 
-		case "k", "up":
+		case key.Matches(msg, theme.Keys.Up):
 			if l.cursor > 0 {
 				l.cursor--
 				l.ensureVisible()
 			}
 
-		case "g":
+		case msg.String() == "g":
 			l.cursor = 0
 			l.scroll = 0
 
-		case "G":
+		case msg.String() == "G":
 			l.cursor = last
 			l.ensureVisible()
 
-		case "ctrl+d":
+		case key.Matches(msg, theme.HalfDown):
 			half := l.viewHeight() / 2
 			l.cursor += half
 			if l.cursor > last {
@@ -194,7 +195,7 @@ func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
 			}
 			l.ensureVisible()
 
-		case "ctrl+f":
+		case key.Matches(msg, theme.PageDown, theme.NextPage):
 			full := l.viewHeight()
 			l.cursor += full
 			if l.cursor > last {
@@ -202,7 +203,7 @@ func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
 			}
 			l.ensureVisible()
 
-		case "ctrl+u":
+		case key.Matches(msg, theme.HalfUp):
 			half := l.viewHeight() / 2
 			l.cursor -= half
 			if l.cursor < 0 {
@@ -210,7 +211,7 @@ func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
 			}
 			l.ensureVisible()
 
-		case "ctrl+b":
+		case key.Matches(msg, theme.PageUp, theme.PrevPage):
 			full := l.viewHeight()
 			l.cursor -= full
 			if l.cursor < 0 {
@@ -218,30 +219,14 @@ func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
 			}
 			l.ensureVisible()
 
-		case "ctrl+n":
-			full := l.viewHeight()
-			l.cursor += full
-			if l.cursor > last {
-				l.cursor = last
-			}
-			l.ensureVisible()
-
-		case "ctrl+p":
-			full := l.viewHeight()
-			l.cursor -= full
-			if l.cursor < 0 {
-				l.cursor = 0
-			}
-			l.ensureVisible()
-
-		case "v":
+		case msg.String() == "v":
 			if l.selectFrom != -1 {
 				l.selectFrom = -1 // toggle off
 			} else {
 				l.selectFrom = l.cursor
 			}
 
-		case "y":
+		case msg.String() == "y":
 			text := l.selectedText()
 			count := 1
 			if l.selectFrom != -1 {
@@ -257,7 +242,7 @@ func (l *LogViewer) Update(msg tea.Msg) tea.Cmd {
 				return LogCopiedMsg{Lines: count, Err: err}
 			}
 
-		case "esc":
+		case key.Matches(msg, theme.Keys.Back):
 			if l.selectFrom != -1 {
 				l.selectFrom = -1
 				return nil

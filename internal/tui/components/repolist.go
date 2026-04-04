@@ -87,12 +87,12 @@ func (r *RepoList) Update(msg tea.Msg) tea.Cmd {
 			if r.cursor < len(r.filtered)-1 {
 				r.cursor++
 			}
-		case msg.String() == "ctrl+n" || msg.String() == "ctrl+f":
+		case key.Matches(msg, theme.PageDown, theme.NextPage):
 			r.cursor += pageSize
 			if r.cursor >= len(r.filtered) {
 				r.cursor = len(r.filtered) - 1
 			}
-		case msg.String() == "ctrl+p" || msg.String() == "ctrl+b":
+		case key.Matches(msg, theme.PageUp, theme.PrevPage):
 			r.cursor -= pageSize
 			if r.cursor < 0 {
 				r.cursor = 0

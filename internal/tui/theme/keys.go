@@ -20,6 +20,16 @@ type KeyMap struct {
 	Help        key.Binding
 }
 
+// Page navigation bindings (not in KeyMap since they're used directly)
+var (
+	PageDown = key.NewBinding(key.WithKeys("ctrl+f", "pgdown"))
+	PageUp   = key.NewBinding(key.WithKeys("ctrl+b", "pgup"))
+	HalfDown = key.NewBinding(key.WithKeys("ctrl+d"))
+	HalfUp   = key.NewBinding(key.WithKeys("ctrl+u"))
+	NextPage = key.NewBinding(key.WithKeys("ctrl+n"))
+	PrevPage = key.NewBinding(key.WithKeys("ctrl+p"))
+)
+
 var Keys = KeyMap{
 	Quit:        key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
 	Up:          key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
