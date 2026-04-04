@@ -47,6 +47,10 @@ func (r *RunList) SetFocused(f bool) {
 	r.focused = f
 }
 
+func (r *RunList) Repo() string {
+	return r.repo
+}
+
 func (r *RunList) Empty() bool {
 	return len(r.runs) == 0
 }

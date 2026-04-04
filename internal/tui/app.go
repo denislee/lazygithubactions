@@ -230,6 +230,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.lastRepo = msg.Repo.FullName
 			a.activePanel = runPanel
 			a.loadingRuns = true
+			a.runList.SetRuns(nil, msg.Repo.FullName)
 			cmds = append(cmds, a.loadRuns(msg.Repo.FullName))
 		}
 
@@ -395,6 +396,7 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		if repo := a.repoList.SelectedRepo(); repo != nil && repo.FullName != a.lastRepo {
 			a.loadingRuns = true
+			a.runList.SetRuns(nil, repo.FullName) // clear stale data immediately
 			cmds = append(cmds, a.loadRuns(repo.FullName))
 		}
 	case runPanel:
@@ -536,15 +538,20 @@ func (a App) renderMainLayout() string {
 	if leftWidth < 20 {
 		leftWidth = 20
 	}
-	runWidth := a.width - leftWidth - 2
-	totalHeight := a.height - 3
+	runWidth := a.width - leftWidth
+	totalHeight := a.height - 2 // room for status + help bars
 
-	// Left column: org selector (fixed height) + repo list (remaining)
+	// Left column: org selector (fixed) + repo list (remaining)
+	// Each panel border takes 2 lines (top+bottom), so org inner height
+	// is orgHeight - 2 border lines. We size the outer heights here.
 	orgHeight := min(a.orgSelector.OrgCount()+3, 8)
 	if orgHeight < 4 {
 		orgHeight = 4
 	}
 	repoHeight := totalHeight - orgHeight
+	if repoHeight < 4 {
+		repoHeight = 4
+	}
 
 	a.orgSelector.SetSize(leftWidth, orgHeight)
 	a.orgSelector.SetFocused(a.activePanel == orgPanel)
@@ -565,8 +572,8 @@ func (a App) renderMainLayout() string {
 	leftCol := lipgloss.JoinVertical(lipgloss.Left, orgView, repoView)
 
 	runView := a.runList.View()
-	if a.loadingRuns && a.runList.Empty() {
-		runView = a.renderLoadingPanel("Workflow Runs", runWidth, totalHeight, a.activePanel == runPanel)
+	if a.loadingRuns {
+		runView = a.renderLoadingPanel(fmt.Sprintf("Workflow Runs — %s", a.runList.Repo()), runWidth, totalHeight, a.activePanel == runPanel)
 	}
 
 	panels := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, runView)
@@ -759,6 +766,7 @@ func (a *App) selectRepo() tea.Cmd {
 	}
 	a.activePanel = runPanel
 	a.loadingRuns = true
+	a.runList.SetRuns(nil, repo.FullName) // clear stale data
 	return a.loadRuns(repo.FullName)
 }
 
