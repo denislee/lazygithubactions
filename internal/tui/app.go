@@ -299,8 +299,16 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return a, nil
 		}
 		if a.activePanel == repoPanel {
+			repo := a.repoList.SelectedRepo()
+			if repo == nil {
+				return a, nil
+			}
 			a.activePanel = runPanel
-			return a, a.selectRepo()
+			// Only reload if switching to a different repo
+			if repo.FullName != a.lastRepo {
+				return a, a.selectRepo()
+			}
+			return a, nil
 		}
 		// l or enter on run panel: drill into run detail
 		if run := a.runList.SelectedRun(); run != nil {
