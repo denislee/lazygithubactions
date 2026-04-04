@@ -133,65 +133,98 @@ func (r *RunList) View() string {
 		start = r.cursor - visibleRuns + 1
 	}
 
-	maxWidth := r.width - 6
-	for i := start; i < len(r.runs) && i < start+visibleRuns; i++ {
-		run := r.runs[i]
-		icon := theme.StatusIcon(run.Status, run.Conclusion)
-		stStyle := theme.StatusStyle(run.Status, run.Conclusion)
+	// Column widths (available = panel width - borders/padding - prefix - icon)
+	avail := r.width - 8 // 4 border/padding + 2 prefix + 2 icon+space
+	if avail < 30 {
+		avail = 30
+	}
 
-		conclusion := run.Conclusion
-		if conclusion == "" {
-			conclusion = run.Status
+	// Fixed columns
+	agoCol := 10   // "  10d ago" right-aligned
+	statusCol := 0 // only in full mode
+
+	if r.Compact {
+		// Compact columns: name | branch | age
+		branchCol := min(18, avail/4)
+		nameCol := avail - branchCol - agoCol - 2 // 2 for gaps
+		if nameCol < 8 {
+			nameCol = 8
 		}
-		ago := timeAgo(run.UpdatedAt)
 
-		prefix := "  "
-		if i == r.cursor {
-			prefix = "> "
-		}
+		for i := start; i < len(r.runs) && i < start+visibleRuns; i++ {
+			run := r.runs[i]
+			icon := theme.StatusIcon(run.Status, run.Conclusion)
+			stStyle := theme.StatusStyle(run.Status, run.Conclusion)
+			ago := timeAgo(run.UpdatedAt)
 
-		if r.Compact {
-			// Compact: single line — use available width
-			agoStr := dimStyle.Render(ago)
-			branchWidth := min(16, maxWidth/4)
-			// workflow name gets remaining space
-			nameWidth := maxWidth - branchWidth - len(ago) - 6 // icon + spaces + prefix
-			if nameWidth < 10 {
-				nameWidth = 10
+			prefix := "  "
+			if i == r.cursor {
+				prefix = "> "
 			}
-			line := fmt.Sprintf("%s%s %-*s %s %s",
+
+			line := fmt.Sprintf("%s%s %-*s %-*s %*s",
 				prefix,
 				stStyle.Render(icon),
-				nameWidth,
-				truncate(run.WorkflowName, nameWidth),
-				truncate(run.Branch, branchWidth),
-				agoStr,
+				nameCol, truncate(run.WorkflowName, nameCol),
+				branchCol, truncate(run.Branch, branchCol),
+				agoCol, ago,
 			)
+
 			if i == r.cursor && r.focused {
 				b.WriteString(theme.SelectedItemStyle.Render(line) + "\n")
 			} else {
 				b.WriteString(theme.NormalItemStyle.Render(line) + "\n")
 			}
-		} else {
-			// Full: two lines + blank
+		}
+	} else {
+		// Full columns: name | status | duration | age
+		statusCol = 12
+		durCol := 8
+		nameCol := avail - statusCol - durCol - agoCol - 3 // 3 for gaps
+		if nameCol < 10 {
+			nameCol = 10
+		}
+
+		for i := start; i < len(r.runs) && i < start+visibleRuns; i++ {
+			run := r.runs[i]
+			icon := theme.StatusIcon(run.Status, run.Conclusion)
+			stStyle := theme.StatusStyle(run.Status, run.Conclusion)
+
+			conclusion := run.Conclusion
+			if conclusion == "" {
+				conclusion = run.Status
+			}
+			ago := timeAgo(run.UpdatedAt)
 			dur := duration(run.CreatedAt, run.UpdatedAt)
-			line1 := fmt.Sprintf("%s%s %s  %s  %s  %s",
+
+			prefix := "  "
+			if i == r.cursor {
+				prefix = "> "
+			}
+
+			line1 := fmt.Sprintf("%s%s %-*s %-*s %*s %*s",
 				prefix,
 				stStyle.Render(icon),
-				truncate(run.WorkflowName, min(25, maxWidth/2)),
-				stStyle.Render(conclusion),
-				dimStyle.Render(dur),
-				dimStyle.Render(ago),
+				nameCol, truncate(run.WorkflowName, nameCol),
+				statusCol, stStyle.Render(truncate(conclusion, statusCol)),
+				durCol, dimStyle.Render(dur),
+				agoCol, dimStyle.Render(ago),
 			)
 
 			displayTitle := run.DisplayTitle
 			if displayTitle == "" {
 				displayTitle = run.Name
 			}
-			line2 := fmt.Sprintf("    %s %s  %s",
-				dimStyle.Render(run.Branch),
-				dimStyle.Render("["+run.Event+"]"),
-				dimStyle.Render(truncate(displayTitle, min(40, maxWidth-20))),
+			branchCol := min(20, avail/4)
+			eventCol := min(16, avail/5)
+			titleCol := avail - branchCol - eventCol - 6
+			if titleCol < 10 {
+				titleCol = 10
+			}
+			line2 := fmt.Sprintf("    %-*s %-*s %s",
+				branchCol, truncate(run.Branch, branchCol),
+				eventCol, dimStyle.Render("["+truncate(run.Event, eventCol-2)+"]"),
+				dimStyle.Render(truncate(displayTitle, titleCol)),
 			)
 
 			if i == r.cursor && r.focused {
@@ -202,6 +235,7 @@ func (r *RunList) View() string {
 			b.WriteString(line2 + "\n\n")
 		}
 	}
+	_ = statusCol
 
 	content := b.String()
 	style := theme.PanelStyle
