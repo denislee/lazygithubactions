@@ -63,7 +63,7 @@ func (l *LogViewer) SetSize(w, h int) {
 }
 
 func (l *LogViewer) visibleHeight() int {
-	h := l.height - 4 // borders (2) + header (1) + padding (1)
+	h := l.height - 3 // borders (2) + header line (1)
 	if h < 1 {
 		return 1
 	}
