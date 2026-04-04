@@ -198,6 +198,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if run := a.runList.SelectedRun(); run != nil {
 				title = fmt.Sprintf("%s #%d", run.WorkflowName, run.ID)
 			}
+			a.logViewer.SetSize(a.width, a.height)
 			a.logViewer.SetContent(title, msg.Log)
 			a.statusBar.Clear()
 			a.ActiveView = LogView
@@ -468,6 +469,9 @@ func (a App) updateDetailView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (a App) updateLogView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Ensure log viewer has correct dimensions before processing keys
+	a.logViewer.SetSize(a.width, a.height)
+
 	// h always goes back; esc goes back only if not in visual mode
 	if msg.String() == "h" {
 		a.ActiveView = a.previousView
