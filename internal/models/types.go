@@ -49,6 +49,15 @@ type Workflow struct {
 	Path  string `json:"path"`
 }
 
+type WorkflowInput struct {
+	Name        string   // key from the YAML map
+	Description string   `yaml:"description"`
+	Required    bool     `yaml:"required"`
+	Default     string   `yaml:"default"`
+	Type        string   `yaml:"type"` // "string", "choice", "boolean", "environment"
+	Options     []string `yaml:"options"`
+}
+
 type RunDetail struct {
 	WorkflowRun
 	Jobs []Job `json:"jobs"`

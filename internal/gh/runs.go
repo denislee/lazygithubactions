@@ -98,6 +98,30 @@ func (c *Client) ViewRunLog(ctx context.Context, repo string, runID int64) (stri
 	return string(out), nil
 }
 
+// LatestRunStatus fetches only the most recent workflow run for a repo.
+func (c *Client) LatestRunStatus(ctx context.Context, repo string) (status, conclusion string, err error) {
+	out, err := c.run(ctx, "api",
+		fmt.Sprintf("/repos/%s/actions/runs?per_page=1", repo),
+	)
+	if err != nil {
+		return "", "", err
+	}
+	var resp struct {
+		Runs []apiRun `json:"workflow_runs"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return "", "", err
+	}
+	if len(resp.Runs) == 0 {
+		return "", "", nil
+	}
+	r := resp.Runs[0]
+	if r.Conclusion != nil {
+		conclusion = *r.Conclusion
+	}
+	return r.Status, conclusion, nil
+}
+
 func (c *Client) CancelRun(ctx context.Context, repo string, runID int64) error {
 	id := strconv.FormatInt(runID, 10)
 	_, err := c.run(ctx, "run", "cancel", id, "-R", repo)

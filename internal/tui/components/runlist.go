@@ -17,24 +17,43 @@ var (
 )
 
 type RunList struct {
-	runs    []models.WorkflowRun
-	repo    string
-	cursor  int
-	width   int
-	height  int
-	focused bool
-	Compact bool
+	runs        []models.WorkflowRun
+	filtered    []models.WorkflowRun // runs after applying hideSkipped
+	repo        string
+	cursor      int
+	width       int
+	height      int
+	focused     bool
+	Compact     bool
+	hideSkipped bool
 }
 
 func NewRunList() RunList {
-	return RunList{}
+	return RunList{hideSkipped: true}
 }
 
 func (r *RunList) SetRuns(runs []models.WorkflowRun, repo string) {
 	r.runs = runs
 	r.repo = repo
-	if r.cursor >= len(runs) && len(runs) > 0 {
-		r.cursor = len(runs) - 1
+	r.applyFilter()
+}
+
+func (r *RunList) applyFilter() {
+	if !r.hideSkipped {
+		r.filtered = r.runs
+	} else {
+		r.filtered = nil
+		for _, run := range r.runs {
+			if run.Conclusion != "skipped" {
+				r.filtered = append(r.filtered, run)
+			}
+		}
+	}
+	if r.cursor >= len(r.filtered) {
+		r.cursor = len(r.filtered) - 1
+	}
+	if r.cursor < 0 {
+		r.cursor = 0
 	}
 }
 
@@ -52,17 +71,17 @@ func (r *RunList) Repo() string {
 }
 
 func (r *RunList) Empty() bool {
-	return len(r.runs) == 0
+	return len(r.filtered) == 0
 }
 
 func (r *RunList) SelectedRun() *models.WorkflowRun {
-	if len(r.runs) == 0 {
+	if len(r.filtered) == 0 {
 		return nil
 	}
-	if r.cursor >= len(r.runs) {
-		r.cursor = len(r.runs) - 1
+	if r.cursor >= len(r.filtered) {
+		r.cursor = len(r.filtered) - 1
 	}
-	return &r.runs[r.cursor]
+	return &r.filtered[r.cursor]
 }
 
 func (r *RunList) ToggleCompact() {
@@ -72,11 +91,12 @@ func (r *RunList) ToggleCompact() {
 func (r *RunList) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		total := len(r.filtered)
 		linesPerRun := 3
 		if r.Compact {
 			linesPerRun = 1
 		}
-		pageSize := (r.height - 3) / linesPerRun
+		pageSize := (r.height - 4) / linesPerRun
 		if pageSize < 1 {
 			pageSize = 1
 		}
@@ -86,19 +106,32 @@ func (r *RunList) Update(msg tea.Msg) tea.Cmd {
 				r.cursor--
 			}
 		case key.Matches(msg, theme.Keys.Down):
-			if r.cursor < len(r.runs)-1 {
+			if r.cursor < total-1 {
 				r.cursor++
 			}
 		case key.Matches(msg, theme.PageDown, theme.NextPage):
 			r.cursor += pageSize
-			if r.cursor >= len(r.runs) {
-				r.cursor = len(r.runs) - 1
+			if r.cursor >= total {
+				r.cursor = total - 1
 			}
 		case key.Matches(msg, theme.PageUp, theme.PrevPage):
 			r.cursor -= pageSize
 			if r.cursor < 0 {
 				r.cursor = 0
 			}
+		case key.Matches(msg, theme.HalfDown):
+			r.cursor += pageSize / 2
+			if r.cursor >= total {
+				r.cursor = total - 1
+			}
+		case key.Matches(msg, theme.HalfUp):
+			r.cursor -= pageSize / 2
+			if r.cursor < 0 {
+				r.cursor = 0
+			}
+		case msg.String() == "s":
+			r.hideSkipped = !r.hideSkipped
+			r.applyFilter()
 		}
 	}
 	return nil
@@ -109,7 +142,7 @@ func (r *RunList) View() string {
 	title := theme.TitleStyle.Render(fmt.Sprintf("Workflow Runs — %s", r.repo))
 	b.WriteString(title + "\n")
 
-	if len(r.runs) == 0 {
+	if len(r.filtered) == 0 {
 		b.WriteString(theme.NormalItemStyle.Render("  No workflow runs"))
 		content := b.String()
 		style := theme.PanelStyle
@@ -118,6 +151,8 @@ func (r *RunList) View() string {
 		}
 		return style.Width(r.width).Height(r.height).Render(content)
 	}
+
+	runs := r.filtered
 
 	linesPerRun := 3
 	if r.Compact {
@@ -150,15 +185,18 @@ func (r *RunList) View() string {
 
 		// Auto-size branch and actor columns from visible runs
 		branchCol := 0
-		for i := start; i < len(r.runs) && i < start+visibleRuns; i++ {
-			if len(r.runs[i].Branch) > branchCol {
-				branchCol = len(r.runs[i].Branch)
+		for i := start; i < len(runs) && i < start+visibleRuns; i++ {
+			if bw := lipgloss.Width(runs[i].Branch); bw > branchCol {
+				branchCol = bw
 			}
-			if len(r.runs[i].Actor) > actorCol {
-				actorCol = len(r.runs[i].Actor)
+			if aw := lipgloss.Width(runs[i].Actor); aw > actorCol {
+				actorCol = aw
 			}
 		}
 		branchCol += 1
+		if branchCol > 45 {
+			branchCol = 45
+		}
 		actorCol += 1
 		if actorCol > 16 {
 			actorCol = 16
@@ -174,8 +212,8 @@ func (r *RunList) View() string {
 			nameCol = 8
 		}
 
-		for i := start; i < len(r.runs) && i < start+visibleRuns; i++ {
-			run := r.runs[i]
+		for i := start; i < len(runs) && i < start+visibleRuns; i++ {
+			run := runs[i]
 			icon := theme.StatusIcon(run.Status, run.Conclusion)
 			stStyle := theme.StatusStyle(run.Status, run.Conclusion)
 			ago := timeAgo(run.UpdatedAt)
@@ -186,15 +224,16 @@ func (r *RunList) View() string {
 				prefix = "> "
 			}
 
-			durPad := fmt.Sprintf("%*s", durCol, dur)
-			agoPad := fmt.Sprintf("%*s", agoCol, ago)
+			actorPad := padRight(truncate(run.Actor, actorCol-1), actorCol)
+			durPad := padLeft(dur, durCol)
+			agoPad := padLeft(ago, agoCol)
 
-			line := fmt.Sprintf("%s%s %-*s %-*s %-*s %s %s",
+			line := fmt.Sprintf("%s%s %s %s %s %s %s",
 				prefix,
 				stStyle.Render(icon),
-				nameCol, truncate(run.WorkflowName, nameCol),
-				branchCol, truncate(run.Branch, branchCol),
-				actorCol, dimStyle.Render(truncate(run.Actor, actorCol-1)),
+				padRight(truncate(run.WorkflowName, nameCol), nameCol),
+				padRight(truncate(run.Branch, branchCol), branchCol),
+				dimStyle.Render(actorPad),
 				dimStyle.Render(durPad),
 				agoPad,
 			)
@@ -214,8 +253,8 @@ func (r *RunList) View() string {
 			nameCol = 10
 		}
 
-		for i := start; i < len(r.runs) && i < start+visibleRuns; i++ {
-			run := r.runs[i]
+		for i := start; i < len(runs) && i < start+visibleRuns; i++ {
+			run := runs[i]
 			icon := theme.StatusIcon(run.Status, run.Conclusion)
 			stStyle := theme.StatusStyle(run.Status, run.Conclusion)
 
@@ -231,13 +270,13 @@ func (r *RunList) View() string {
 				prefix = "> "
 			}
 
-			line1 := fmt.Sprintf("%s%s %-*s %-*s %*s %*s",
+			line1 := fmt.Sprintf("%s%s %s %s %s %s",
 				prefix,
 				stStyle.Render(icon),
-				nameCol, truncate(run.WorkflowName, nameCol),
-				statusCol, stStyle.Render(truncate(conclusion, statusCol)),
-				durCol, dimStyle.Render(dur),
-				agoCol, dimStyle.Render(ago),
+				padRight(truncate(run.WorkflowName, nameCol), nameCol),
+				padRight(stStyle.Render(truncate(conclusion, statusCol)), statusCol),
+				padLeft(dimStyle.Render(dur), durCol),
+				padLeft(dimStyle.Render(ago), agoCol),
 			)
 
 			displayTitle := run.DisplayTitle
@@ -246,13 +285,19 @@ func (r *RunList) View() string {
 			}
 			branchCol := min(20, avail/4)
 			eventCol := min(16, avail/5)
-			titleCol := avail - branchCol - eventCol - 6
+			actorCol := min(16, avail/6)
+			titleCol := avail - branchCol - eventCol - actorCol - 8
 			if titleCol < 10 {
 				titleCol = 10
 			}
-			line2 := fmt.Sprintf("    %-*s %-*s %s",
-				branchCol, truncate(run.Branch, branchCol),
-				eventCol, dimStyle.Render("["+truncate(run.Event, eventCol-2)+"]"),
+			actorStr := ""
+			if run.Actor != "" {
+				actorStr = "@" + truncate(run.Actor, actorCol-1)
+			}
+			line2 := fmt.Sprintf("    %s %s %s %s",
+				padRight(truncate(run.Branch, branchCol), branchCol),
+				padRight(dimStyle.Render("["+truncate(run.Event, eventCol-2)+"]"), eventCol),
+				padRight(dimStyle.Render(actorStr), actorCol),
 				dimStyle.Render(truncate(displayTitle, titleCol)),
 			)
 
@@ -265,6 +310,13 @@ func (r *RunList) View() string {
 		}
 	}
 	_ = statusCol
+
+	if r.hideSkipped {
+		skipped := len(r.runs) - len(r.filtered)
+		if skipped > 0 {
+			b.WriteString(dimStyle.Render(fmt.Sprintf("  (%d skipped runs hidden, press s to show)", skipped)))
+		}
+	}
 
 	content := b.String()
 	style := theme.PanelStyle
@@ -309,17 +361,43 @@ func duration(start, end time.Time) string {
 	}
 }
 
+// truncate truncates s to fit within max display columns.
 func truncate(s string, max int) string {
 	if max <= 0 {
 		return ""
 	}
-	if len(s) <= max {
+	if lipgloss.Width(s) <= max {
 		return s
 	}
 	if max <= 1 {
 		return "…"
 	}
-	return s[:max-1] + "…"
+	runes := []rune(s)
+	for i := len(runes); i > 0; i-- {
+		candidate := string(runes[:i]) + "…"
+		if lipgloss.Width(candidate) <= max {
+			return candidate
+		}
+	}
+	return "…"
+}
+
+// padRight pads s with spaces to reach exactly width display columns.
+func padRight(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
+}
+
+// padLeft pads s with leading spaces to reach exactly width display columns.
+func padLeft(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
+	}
+	return strings.Repeat(" ", width-w) + s
 }
 
 func min(a, b int) int {

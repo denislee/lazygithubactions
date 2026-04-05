@@ -30,6 +30,12 @@ type WorkflowsLoadedMsg struct {
 	Err       error
 }
 
+type BranchesAndInputsLoadedMsg struct {
+	Branches []string
+	Inputs   []models.WorkflowInput
+	Err      error
+}
+
 type ActionResultMsg struct {
 	Action  string
 	Success bool
@@ -37,3 +43,6 @@ type ActionResultMsg struct {
 }
 
 type TickMsg struct{}
+
+// DetailTickMsg triggers auto-refresh of the run detail view when jobs are in progress.
+type DetailTickMsg struct{}

@@ -12,6 +12,7 @@ import (
 type repoJSON struct {
 	Name     string `json:"name"`
 	FullName string `json:"full_name"`
+	Archived bool   `json:"archived"`
 	Owner    struct {
 		Login string `json:"login"`
 	} `json:"owner"`
@@ -41,13 +42,16 @@ func (c *Client) ListRepos(ctx context.Context) ([]models.Repo, error) {
 		return nil, err
 	}
 
-	result := make([]models.Repo, len(repos))
-	for i, r := range repos {
-		result[i] = models.Repo{
+	result := make([]models.Repo, 0, len(repos))
+	for _, r := range repos {
+		if r.Archived {
+			continue
+		}
+		result = append(result, models.Repo{
 			Name:     r.Name,
 			Owner:    r.Owner.Login,
 			FullName: r.Owner.Login + "/" + r.Name,
-		}
+		})
 	}
 
 	sort.Slice(result, func(i, j int) bool {

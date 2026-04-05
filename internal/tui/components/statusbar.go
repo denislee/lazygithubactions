@@ -44,7 +44,7 @@ func HelpBar(width int, activeView string) string {
 	var help string
 	switch activeView {
 	case "detail":
-		help = "esc:back  j/k:nav  L:logs  R:rerun  C:cancel  q:quit"
+		help = "esc:back  j/k:nav  L:logs  R:rerun  C:cancel  s:toggle skipped  q:quit"
 	case "log":
 		help = "esc:back  \u2191/\u2193:scroll  q:quit"
 	default:

@@ -35,6 +35,35 @@ const (
 	ConfirmView
 )
 
+// RepoStatusMsg carries a single repo's latest run status from the background poller.
+type RepoStatusMsg struct {
+	Repo       string
+	Status     string
+	Conclusion string
+}
+
+// BgPollTickMsg triggers the next batch of background status fetches.
+type BgPollTickMsg struct{}
+
+// ActiveRunDetailMsg carries a polled in-progress run detail for the status bar.
+type ActiveRunDetailMsg struct {
+	Detail *models.RunDetail
+}
+
+// ActiveRunTickMsg triggers the next poll for the active run.
+type ActiveRunTickMsg struct{}
+
+// DetailRefreshMsg carries a refreshed run detail for the detail view (preserves cursor).
+type DetailRefreshMsg struct {
+	Detail *models.RunDetail
+	Err    error
+}
+
+// RepoDebounceMsg fires after a short delay to load runs for the selected repo.
+type RepoDebounceMsg struct {
+	Repo string
+}
+
 type App struct {
 	client      *gh.Client
 	orgSelector components.OrgSelector
@@ -65,6 +94,16 @@ type App struct {
 	spinner      spinner.Model
 	err          error
 	message      string
+
+	bgPollIdx int // next repo index to poll in background
+
+	// Debounce: when navigating repos quickly, defer loading runs until cursor settles
+	pendingRepo string
+	cancelRuns  context.CancelFunc // cancels the in-flight loadRuns request
+
+	// Active run tracking: when an in-progress run is detected, poll its detail
+	activeRunID   int64
+	activeRunRepo string
 }
 
 func NewApp() App {
@@ -92,6 +131,12 @@ func NewApp() App {
 }
 
 func (a App) Init() tea.Cmd {
+	// Seed repo list with cached run statuses
+	if entries, err := gh.LoadCachedRunStatuses(); err == nil && entries != nil {
+		for repo, e := range entries {
+			a.repoList.SetRepoStatus(repo, e.Status, e.Conclusion)
+		}
+	}
 	return tea.Batch(
 		a.loadRepos(),
 		a.tick(),
@@ -106,7 +151,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		a.width = msg.Width
 		a.height = msg.Height
-		a.statusBar.SetWidth(a.width)
+		a.layoutComponents()
 		return a, nil
 
 	case spinner.TickMsg:
@@ -166,9 +211,32 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.loadingRuns = true
 				cmds = append(cmds, a.loadRuns(repo.FullName))
 			}
+			// Kick off background status polling for all repos immediately
+			a.bgPollIdx = 0
+			cmds = append(cmds, a.bgPollBatch())
+		}
+
+	case RepoDebounceMsg:
+		// Only load if the cursor is still on this repo (debounce)
+		if repo := a.repoList.SelectedRepo(); repo != nil && repo.FullName == msg.Repo && a.pendingRepo == msg.Repo {
+			a.pendingRepo = ""
+			cmds = append(cmds, a.loadRuns(msg.Repo))
+		} else {
+			// Cursor moved on; skip this stale debounce
+			if a.pendingRepo != msg.Repo {
+				a.loadingRuns = false
+			}
 		}
 
 	case RunsLoadedMsg:
+		// Ignore stale responses from repos we've navigated away from
+		if repo := a.repoList.SelectedRepo(); repo != nil && repo.FullName != msg.Repo && msg.Repo != a.lastRepo {
+			return a, tea.Batch(cmds...)
+		}
+		// Silently discard cancelled requests (user navigated away)
+		if msg.Err != nil && msg.Err == context.Canceled {
+			return a, tea.Batch(cmds...)
+		}
 		a.loadingRuns = false
 		if msg.Err != nil {
 			a.err = msg.Err
@@ -176,7 +244,26 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			a.runList.SetRuns(msg.Runs, msg.Repo)
 			a.lastRepo = msg.Repo
-			a.statusBar.Clear()
+			// Track last run status for repo icon
+			if len(msg.Runs) > 0 {
+				r := msg.Runs[0]
+				a.repoList.SetRepoStatus(msg.Repo, r.Status, r.Conclusion)
+				// If the latest run is in-progress, start tracking it
+				if r.Status == "in_progress" || r.Status == "queued" || r.Status == "waiting" {
+					if a.activeRunID != r.ID {
+						a.activeRunID = r.ID
+						a.activeRunRepo = msg.Repo
+						cmds = append(cmds, a.pollActiveRun(), a.activeRunTick())
+					}
+				} else if a.activeRunRepo == msg.Repo {
+					a.activeRunID = 0
+					a.activeRunRepo = ""
+					a.statusBar.Clear()
+				}
+			}
+			if a.activeRunID == 0 {
+				a.statusBar.Clear()
+			}
 		}
 
 	case RunDetailLoadedMsg:
@@ -187,6 +274,30 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.runDetail.SetDetail(msg.Detail)
 			a.ActiveView = DetailView
 			a.statusBar.Clear()
+			if a.runDetail.HasRunningJobs() {
+				cmds = append(cmds, a.detailTick())
+			}
+		}
+
+	case DetailRefreshMsg:
+		if a.ActiveView != DetailView {
+			break
+		}
+		if msg.Err != nil {
+			a.statusBar.SetMessage("Refresh failed: "+msg.Err.Error(), true)
+		} else {
+			a.runDetail.UpdateDetail(msg.Detail)
+			a.statusBar.Clear()
+			if a.runDetail.HasRunningJobs() {
+				cmds = append(cmds, a.detailTick())
+			}
+		}
+
+	case theme.DetailTickMsg:
+		if a.ActiveView == DetailView {
+			if run := a.runList.SelectedRun(); run != nil && a.runDetail.HasRunningJobs() {
+				cmds = append(cmds, a.refreshRunDetail(run.ID))
+			}
 		}
 
 	case LogLoadedMsg:
@@ -214,6 +325,21 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.statusBar.Clear()
 		}
 
+	case components.TriggerWorkflowSelectedMsg:
+		a.statusBar.SetMessage("Loading branches...", false)
+		cmds = append(cmds, a.loadBranchesAndInputs(msg.WorkflowPath))
+
+	case theme.BranchesAndInputsLoadedMsg:
+		if msg.Err != nil {
+			a.statusBar.SetMessage("Error loading branches: "+msg.Err.Error(), true)
+			a.ActiveView = MainView
+			a.triggerDlg = nil
+		} else if a.triggerDlg != nil {
+			cmd := a.triggerDlg.SetBranchesAndInputs(msg.Branches, msg.Inputs, a.width)
+			cmds = append(cmds, cmd)
+			a.statusBar.Clear()
+		}
+
 	case components.LogCopiedMsg:
 		if msg.Err != nil {
 			a.statusBar.SetMessage("Copy failed: "+msg.Err.Error(), true)
@@ -230,12 +356,16 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.loadingRuns = true
 			cmds = append(cmds, a.loadRuns(repo.FullName))
 		}
+		// Restart background polling for the new org's repos
+		a.bgPollIdx = 0
+		cmds = append(cmds, a.bgPollBatch())
 
 	case components.QuickSwitchResultMsg:
 		a.ActiveView = MainView
 		a.quickSwitch = nil
 		if !msg.Cancelled && msg.Repo != nil {
 			a.lastRepo = msg.Repo.FullName
+			a.repoList.SelectByName(msg.Repo.FullName)
 			a.activePanel = runPanel
 			a.loadingRuns = true
 			a.runList.SetRuns(nil, msg.Repo.FullName)
@@ -246,7 +376,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.ActiveView = MainView
 		a.triggerDlg = nil
 		if !msg.Cancelled {
-			cmds = append(cmds, a.triggerWorkflow(msg.WorkflowFile, msg.Branch))
+			cmds = append(cmds, a.triggerWorkflow(msg.WorkflowFile, msg.Branch, msg.Inputs))
 		}
 
 	case components.ConfirmDialogResultMsg:
@@ -275,6 +405,60 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, a.loadRuns(a.lastRepo))
 		}
 		cmds = append(cmds, a.tick())
+
+	case RepoStatusMsg:
+		a.repoList.SetRepoStatus(msg.Repo, msg.Status, msg.Conclusion)
+		gh.SaveRunStatus(msg.Repo, msg.Status, msg.Conclusion)
+
+	case BgPollTickMsg:
+		cmds = append(cmds, a.bgPollBatch())
+
+	case ActiveRunDetailMsg:
+		if msg.Detail == nil || a.activeRunID == 0 {
+			break
+		}
+		run := msg.Detail
+		if run.Status != "in_progress" && run.Status != "queued" && run.Status != "waiting" {
+			// Run finished
+			a.activeRunID = 0
+			a.activeRunRepo = ""
+			icon := theme.StatusIcon(run.Status, run.Conclusion)
+			a.statusBar.SetMessage(fmt.Sprintf("%s %s completed: %s", icon, run.WorkflowName, run.Conclusion), run.Conclusion == "failure")
+			cmds = append(cmds, a.refreshCurrent())
+			break
+		}
+		// Find the currently running step
+		var activeJob, activeStep string
+		for _, job := range run.Jobs {
+			if job.Status == "in_progress" {
+				activeJob = job.Name
+				for _, step := range job.Steps {
+					if step.Status == "in_progress" {
+						activeStep = step.Name
+						break
+					}
+				}
+				break
+			}
+			if job.Status == "queued" || job.Status == "waiting" {
+				if activeJob == "" {
+					activeJob = job.Name
+				}
+			}
+		}
+		statusMsg := fmt.Sprintf("● %s", run.WorkflowName)
+		if activeJob != "" {
+			statusMsg += fmt.Sprintf(" → %s", activeJob)
+		}
+		if activeStep != "" {
+			statusMsg += fmt.Sprintf(" → %s", activeStep)
+		}
+		a.statusBar.SetMessage(statusMsg, false)
+
+	case ActiveRunTickMsg:
+		if a.activeRunID != 0 {
+			cmds = append(cmds, a.pollActiveRun(), a.activeRunTick())
+		}
 	}
 
 	return a, tea.Batch(cmds...)
@@ -412,9 +596,16 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		cmd := a.repoList.Update(msg)
 		cmds = append(cmds, cmd)
 		if repo := a.repoList.SelectedRepo(); repo != nil && repo.FullName != a.lastRepo {
+			// Cancel any in-flight runs request immediately
+			if a.cancelRuns != nil {
+				a.cancelRuns()
+				a.cancelRuns = nil
+			}
+			// Debounce: defer loading runs until cursor settles (150ms)
+			a.pendingRepo = repo.FullName
 			a.loadingRuns = true
 			a.runList.SetRuns(nil, repo.FullName) // clear stale data immediately
-			cmds = append(cmds, a.loadRuns(repo.FullName))
+			cmds = append(cmds, a.debounceRepo(repo.FullName))
 		}
 	case runPanel:
 		cmd := a.runList.Update(msg)
@@ -462,6 +653,12 @@ func (a App) updateDetailView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			a.ActiveView = ConfirmView
 			return a, nil
 		}
+
+	case key.Matches(msg, theme.Keys.Refresh):
+		if run := a.runList.SelectedRun(); run != nil {
+			a.statusBar.SetMessage("Refreshing...", false)
+			return a, a.refreshRunDetail(run.ID)
+		}
 	}
 
 	cmd := a.runDetail.Update(msg)
@@ -472,14 +669,18 @@ func (a App) updateLogView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Ensure log viewer has correct dimensions before processing keys
 	a.logViewer.SetSize(a.width, a.height)
 
-	// h always goes back; esc goes back only if not in visual mode
-	if msg.String() == "h" {
-		a.ActiveView = a.previousView
-		return a, nil
-	}
-	if key.Matches(msg, theme.Keys.Back) && !a.logViewer.InVisualMode() {
-		a.ActiveView = a.previousView
-		return a, nil
+	// Don't intercept keys while searching or in visual mode
+	if !a.logViewer.InSearchMode() {
+		// h always goes back
+		if msg.String() == "h" {
+			a.ActiveView = a.previousView
+			return a, nil
+		}
+		// esc goes back only if not in visual mode
+		if key.Matches(msg, theme.Keys.Back) && !a.logViewer.InVisualMode() {
+			a.ActiveView = a.previousView
+			return a, nil
+		}
 	}
 
 	cmd := a.logViewer.Update(msg)
@@ -561,31 +762,10 @@ func (a App) renderMainLayout() string {
 	}
 	runWidth := a.width - leftWidth
 	totalHeight := a.height - 2
-
-	// Inner dimensions (subtract border: 2 top/bottom, 2 left/right padding)
 	innerWidth := leftWidth - 4
 
-	// Org section height (content lines, no border)
-	orgContentLines := min(a.orgSelector.OrgCount(), 5)
-	if orgContentLines < 1 {
-		orgContentLines = 1
-	}
-	orgSectionHeight := orgContentLines + 1 // +1 for title line
-
-	// Repo section gets the rest
-	// Total inner = totalHeight - 2 (border) - orgSection - 1 (divider)
-	repoContentHeight := totalHeight - 2 - orgSectionHeight - 1
-	if repoContentHeight < 3 {
-		repoContentHeight = 3
-	}
-
-	a.orgSelector.SetSize(innerWidth, orgContentLines)
 	a.orgSelector.SetFocused(a.activePanel == orgPanel)
-
-	a.repoList.SetSize(innerWidth, repoContentHeight-1) // -1 for title
 	a.repoList.SetFocused(a.activePanel == repoPanel)
-
-	a.runList.SetSize(runWidth, totalHeight)
 	a.runList.SetFocused(a.activePanel == runPanel)
 
 	// Build left panel content: org + divider + repos in a single frame
@@ -665,6 +845,35 @@ func (a *App) filterReposByOrg() {
 	a.repoList.SetRepos(a.repos)
 }
 
+func (a *App) layoutComponents() {
+	a.statusBar.SetWidth(a.width)
+
+	leftWidth := a.width / 4
+	if leftWidth < 20 {
+		leftWidth = 20
+	}
+	runWidth := a.width - leftWidth
+	totalHeight := a.height - 2
+
+	innerWidth := leftWidth - 4
+	orgContentLines := min(a.orgSelector.OrgCount(), 5)
+	if orgContentLines < 1 {
+		orgContentLines = 1
+	}
+	orgSectionHeight := orgContentLines + 1
+
+	repoContentHeight := totalHeight - 2 - orgSectionHeight - 1
+	if repoContentHeight < 3 {
+		repoContentHeight = 3
+	}
+
+	a.orgSelector.SetSize(innerWidth, orgContentLines)
+	a.repoList.SetSize(innerWidth, repoContentHeight-1)
+	a.runList.SetSize(runWidth, totalHeight)
+	a.runDetail.SetSize(a.width, a.height-2)
+	a.logViewer.SetSize(a.width, a.height)
+}
+
 func (a *App) cyclePanel() {
 	switch a.activePanel {
 	case orgPanel:
@@ -701,10 +910,19 @@ func (a *App) loadRepos() tea.Cmd {
 }
 
 func (a *App) loadRuns(repo string) tea.Cmd {
+	// Cancel any in-flight request before starting a new one
+	if a.cancelRuns != nil {
+		a.cancelRuns()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	a.cancelRuns = cancel
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		runs, err := a.client.ListRuns(ctx, repo)
+		if ctx.Err() != nil {
+			// Request was cancelled — return a no-op result
+			return RunsLoadedMsg{Repo: repo, Err: ctx.Err()}
+		}
 		return RunsLoadedMsg{Repo: repo, Runs: runs, Err: err}
 	}
 }
@@ -778,16 +996,49 @@ func (a *App) downloadArtifacts(runID int64) tea.Cmd {
 	}
 }
 
-func (a *App) triggerWorkflow(file, branch string) tea.Cmd {
+func (a *App) triggerWorkflow(file, branch string, inputs map[string]string) tea.Cmd {
 	repo := a.lastRepo
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		err := a.client.TriggerWorkflow(ctx, repo, file, branch)
+		err := a.client.TriggerWorkflow(ctx, repo, file, branch, inputs)
 		if err != nil {
 			return ActionResultMsg{Action: "trigger", Success: false, Message: "Trigger failed: " + err.Error()}
 		}
 		return ActionResultMsg{Action: "trigger", Success: true, Message: "Workflow triggered"}
+	}
+}
+
+func (a *App) loadBranchesAndInputs(workflowPath string) tea.Cmd {
+	repo := a.lastRepo
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		var branches []string
+		var inputs []models.WorkflowInput
+		var branchErr, inputErr error
+
+		done := make(chan struct{}, 2)
+		go func() {
+			branches, branchErr = a.client.ListBranches(ctx, repo)
+			done <- struct{}{}
+		}()
+		go func() {
+			inputs, inputErr = a.client.GetWorkflowInputs(ctx, repo, workflowPath)
+			done <- struct{}{}
+		}()
+		<-done
+		<-done
+
+		if branchErr != nil {
+			return theme.BranchesAndInputsLoadedMsg{Err: branchErr}
+		}
+		if inputErr != nil {
+			// Non-fatal: workflow may not have inputs
+			return theme.BranchesAndInputsLoadedMsg{Branches: branches}
+		}
+		return theme.BranchesAndInputsLoadedMsg{Branches: branches, Inputs: inputs}
 	}
 }
 
@@ -796,6 +1047,12 @@ func (a *App) refreshCurrent() tea.Cmd {
 		return a.loadRuns(a.lastRepo)
 	}
 	return a.loadRepos()
+}
+
+func (a *App) debounceRepo(repo string) tea.Cmd {
+	return tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
+		return RepoDebounceMsg{Repo: repo}
+	})
 }
 
 func (a *App) selectRepo() tea.Cmd {
@@ -813,4 +1070,78 @@ func (a *App) tick() tea.Cmd {
 	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
 		return TickMsg{}
 	})
+}
+
+func (a *App) bgPollTick() tea.Cmd {
+	return tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
+		return BgPollTickMsg{}
+	})
+}
+
+// bgPollBatch fetches status for the next batch of repos and schedules the next tick.
+func (a *App) bgPollBatch() tea.Cmd {
+	repos := a.repos // org-filtered repos
+	if len(repos) == 0 {
+		return a.bgPollTick()
+	}
+	batchSize := 5
+	if batchSize > len(repos) {
+		batchSize = len(repos)
+	}
+	var fetchCmds []tea.Cmd
+	for i := 0; i < batchSize; i++ {
+		idx := (a.bgPollIdx + i) % len(repos)
+		fetchCmds = append(fetchCmds, a.fetchRepoStatus(repos[idx].FullName))
+	}
+	a.bgPollIdx = (a.bgPollIdx + batchSize) % len(repos)
+	fetchCmds = append(fetchCmds, a.bgPollTick())
+	return tea.Batch(fetchCmds...)
+}
+
+func (a *App) activeRunTick() tea.Cmd {
+	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+		return ActiveRunTickMsg{}
+	})
+}
+
+func (a *App) detailTick() tea.Cmd {
+	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+		return theme.DetailTickMsg{}
+	})
+}
+
+func (a *App) refreshRunDetail(runID int64) tea.Cmd {
+	repo := a.lastRepo
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		detail, err := a.client.ViewRun(ctx, repo, runID)
+		return DetailRefreshMsg{Detail: detail, Err: err}
+	}
+}
+
+func (a *App) pollActiveRun() tea.Cmd {
+	repo := a.activeRunRepo
+	runID := a.activeRunID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		detail, err := a.client.ViewRun(ctx, repo, runID)
+		if err != nil {
+			return nil
+		}
+		return ActiveRunDetailMsg{Detail: detail}
+	}
+}
+
+func (a *App) fetchRepoStatus(repo string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		status, conclusion, err := a.client.LatestRunStatus(ctx, repo)
+		if err != nil {
+			return nil
+		}
+		return RepoStatusMsg{Repo: repo, Status: status, Conclusion: conclusion}
+	}
 }

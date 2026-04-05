@@ -11,11 +11,12 @@ import (
 )
 
 type RunDetail struct {
-	detail    *models.RunDetail
-	cursor    int
-	width     int
-	height    int
-	collapsed map[int]bool // job index -> collapsed state
+	detail      *models.RunDetail
+	cursor      int
+	width       int
+	height      int
+	collapsed   map[int]bool // job index -> collapsed state
+	hideSkipped bool         // hide jobs with conclusion "skipped"
 }
 
 type visibleLine struct {
@@ -31,7 +32,8 @@ type visibleLine struct {
 
 func NewRunDetail() RunDetail {
 	return RunDetail{
-		collapsed: make(map[int]bool),
+		collapsed:   make(map[int]bool),
+		hideSkipped: true,
 	}
 }
 
@@ -39,6 +41,38 @@ func (d *RunDetail) SetDetail(detail *models.RunDetail) {
 	d.detail = detail
 	d.cursor = 0
 	d.collapsed = make(map[int]bool)
+	// Default all jobs to collapsed
+	if detail != nil {
+		for i := range detail.Jobs {
+			d.collapsed[i] = true
+		}
+	}
+}
+
+// UpdateDetail refreshes the data without resetting cursor or collapse state.
+func (d *RunDetail) UpdateDetail(detail *models.RunDetail) {
+	d.detail = detail
+	// Clamp cursor if jobs changed
+	lines := d.visibleLines()
+	if d.cursor >= len(lines) {
+		d.cursor = len(lines) - 1
+	}
+	if d.cursor < 0 {
+		d.cursor = 0
+	}
+}
+
+// HasRunningJobs returns true if any job is in progress, queued, or waiting.
+func (d *RunDetail) HasRunningJobs() bool {
+	if d.detail == nil {
+		return false
+	}
+	for _, job := range d.detail.Jobs {
+		if job.Status == "in_progress" || job.Status == "queued" || job.Status == "waiting" {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *RunDetail) SetSize(w, h int) {
@@ -53,6 +87,10 @@ func (d *RunDetail) visibleLines() []visibleLine {
 	}
 	var lines []visibleLine
 	for ji, job := range d.detail.Jobs {
+		if d.hideSkipped && job.Conclusion == "skipped" {
+			continue
+		}
+
 		dur := ""
 		if !job.StartedAt.IsZero() && !job.CompletedAt.IsZero() {
 			dur = duration(job.StartedAt, job.CompletedAt)
@@ -119,6 +157,15 @@ func (d *RunDetail) Update(msg tea.Msg) tea.Cmd {
 			}
 		case key.Matches(msg, theme.PageUp, theme.PrevPage):
 			d.cursor -= pageSize
+			if d.cursor < 0 {
+				d.cursor = 0
+			}
+		case msg.String() == "s":
+			d.hideSkipped = !d.hideSkipped
+			newLines := d.visibleLines()
+			if d.cursor >= len(newLines) {
+				d.cursor = len(newLines) - 1
+			}
 			if d.cursor < 0 {
 				d.cursor = 0
 			}
@@ -195,6 +242,18 @@ func (d *RunDetail) View() string {
 
 	if len(lines) == 0 {
 		b.WriteString(theme.NormalItemStyle.Render("  No jobs found"))
+	}
+
+	if d.hideSkipped && d.detail != nil {
+		skipped := 0
+		for _, job := range d.detail.Jobs {
+			if job.Conclusion == "skipped" {
+				skipped++
+			}
+		}
+		if skipped > 0 {
+			b.WriteString(dimStyle.Render(fmt.Sprintf("\n  (%d skipped jobs hidden, press s to show)", skipped)))
+		}
 	}
 
 	return theme.ActivePanelStyle.Width(d.width).Height(d.height).Render(b.String())
