@@ -169,7 +169,7 @@ func (d *RunDetail) Update(msg tea.Msg) tea.Cmd {
 			if d.cursor < 0 {
 				d.cursor = 0
 			}
-		case key.Matches(msg, theme.Keys.Enter) || msg.String() == "l":
+		case key.Matches(msg, theme.Keys.Enter) || msg.String() == "l" || msg.String() == "space" || msg.String() == " ":
 			// Toggle collapse on job lines
 			if d.cursor < total && lines[d.cursor].isJob {
 				ji := lines[d.cursor].jobIdx

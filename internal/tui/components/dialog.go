@@ -411,7 +411,7 @@ func (d TriggerDialog) updateInputsStep(msg tea.KeyPressMsg) (TriggerDialog, tea
 		switch inp.Type {
 		case "boolean":
 			switch msg.String() {
-			case " ", "x":
+			case " ", "space", "x":
 				if d.inputValues[d.inputCursor] == "true" {
 					d.inputValues[d.inputCursor] = "false"
 				} else {
