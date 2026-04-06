@@ -361,15 +361,17 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, a.bgPollBatch())
 
 	case components.QuickSwitchResultMsg:
-		a.ActiveView = MainView
 		a.quickSwitch = nil
 		if !msg.Cancelled && msg.Repo != nil {
+			a.ActiveView = MainView
 			a.lastRepo = msg.Repo.FullName
 			a.repoList.SelectByName(msg.Repo.FullName)
 			a.activePanel = runPanel
 			a.loadingRuns = true
 			a.runList.SetRuns(nil, msg.Repo.FullName)
 			cmds = append(cmds, a.loadRuns(msg.Repo.FullName))
+		} else {
+			a.ActiveView = a.previousView
 		}
 
 	case components.TriggerDialogResultMsg:
@@ -573,6 +575,7 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, theme.Keys.QuickSwitch):
 		qs := components.NewQuickSwitch(a.repos)
 		a.quickSwitch = &qs
+		a.previousView = MainView
 		a.ActiveView = QuickSwitchView
 		return a, a.quickSwitch.Init()
 	}
@@ -659,6 +662,13 @@ func (a App) updateDetailView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			a.statusBar.SetMessage("Refreshing...", false)
 			return a, a.refreshRunDetail(run.ID)
 		}
+
+	case key.Matches(msg, theme.Keys.QuickSwitch):
+		qs := components.NewQuickSwitch(a.repos)
+		a.quickSwitch = &qs
+		a.previousView = DetailView
+		a.ActiveView = QuickSwitchView
+		return a, a.quickSwitch.Init()
 	}
 
 	cmd := a.runDetail.Update(msg)
@@ -888,17 +898,27 @@ func (a *App) cyclePanel() {
 // --- Commands ---
 
 func (a *App) loadRepos() tea.Cmd {
-	return func() tea.Msg {
-		if repos, err := gh.LoadCachedRepos(); err == nil && repos != nil {
-			go func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				if fresh, err := a.client.ListRepos(ctx); err == nil {
-					_ = gh.SaveCachedRepos(fresh)
-				}
-			}()
+	repos, expired, err := gh.LoadCachedRepos()
+	if err == nil && repos != nil {
+		if expired {
+			return tea.Batch(
+				func() tea.Msg { return ReposLoadedMsg{Repos: repos} },
+				func() tea.Msg {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					if fresh, err := a.client.ListRepos(ctx); err == nil {
+						_ = gh.SaveCachedRepos(fresh)
+						return ReposLoadedMsg{Repos: fresh}
+					}
+					return nil
+				},
+			)
+		}
+		return func() tea.Msg {
 			return ReposLoadedMsg{Repos: repos}
 		}
+	}
+	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		repos, err := a.client.ListRepos(ctx)

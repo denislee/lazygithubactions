@@ -21,7 +21,7 @@ func TestCacheRoundTrip(t *testing.T) {
 		t.Fatalf("save failed: %v", err)
 	}
 
-	loaded, err := LoadCachedRepos()
+	loaded, _, err := LoadCachedRepos()
 	if err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestCacheMissOnEmpty(t *testing.T) {
 	os.Setenv("XDG_CACHE_HOME", tmpDir)
 	defer os.Setenv("XDG_CACHE_HOME", origCacheDir)
 
-	repos, err := LoadCachedRepos()
+	repos, _, err := LoadCachedRepos()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -39,22 +39,20 @@ func cachePath() string {
 	return filepath.Join(cacheDir(), "repos.json")
 }
 
-func LoadCachedRepos() ([]models.Repo, error) {
+func LoadCachedRepos() ([]models.Repo, bool, error) {
 	data, err := os.ReadFile(cachePath())
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return nil, false, nil
 		}
-		return nil, err
+		return nil, false, err
 	}
 	var cache repoCache
 	if err := json.Unmarshal(data, &cache); err != nil {
-		return nil, nil
+		return nil, false, nil
 	}
-	if time.Since(cache.FetchedAt) > cacheTTL {
-		return nil, nil
-	}
-	return cache.Repos, nil
+	expired := time.Since(cache.FetchedAt) > cacheTTL
+	return cache.Repos, expired, nil
 }
 
 func SaveCachedRepos(repos []models.Repo) error {
