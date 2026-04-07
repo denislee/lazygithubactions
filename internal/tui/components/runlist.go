@@ -19,6 +19,7 @@ var (
 type RunList struct {
 	runs        []models.WorkflowRun
 	filtered    []models.WorkflowRun // runs after applying hideSkipped
+	commit      *models.Commit
 	repo        string
 	cursor      int
 	width       int
@@ -32,8 +33,9 @@ func NewRunList() RunList {
 	return RunList{hideSkipped: true}
 }
 
-func (r *RunList) SetRuns(runs []models.WorkflowRun, repo string) {
+func (r *RunList) SetRuns(runs []models.WorkflowRun, commit *models.Commit, repo string) {
 	r.runs = runs
+	r.commit = commit
 	r.repo = repo
 	r.applyFilter()
 }
@@ -96,7 +98,11 @@ func (r *RunList) Update(msg tea.Msg) tea.Cmd {
 		if r.Compact {
 			linesPerRun = 1
 		}
-		pageSize := (r.height - 4) / linesPerRun
+		headerLines := 4
+		if r.commit != nil {
+			headerLines += 2
+		}
+		pageSize := (r.height - headerLines) / linesPerRun
 		if pageSize < 1 {
 			pageSize = 1
 		}
@@ -142,6 +148,15 @@ func (r *RunList) View() string {
 	title := theme.TitleStyle.Render(fmt.Sprintf("Workflow Runs — %s", r.repo))
 	b.WriteString(title + "\n")
 
+	if r.commit != nil {
+		ago := timeAgo(r.commit.Author.Date)
+		msg := strings.Split(r.commit.Message, "\n")[0]
+		commitLine := dimStyle.Render(fmt.Sprintf("  Latest commit on main: %s by %s (%s)", truncate(msg, 50), r.commit.Author.Name, ago))
+		b.WriteString(commitLine + "\n\n")
+	} else {
+		b.WriteString("\n")
+	}
+
 	if len(r.filtered) == 0 {
 		b.WriteString(theme.NormalItemStyle.Render("  No workflow runs"))
 		content := b.String()
@@ -158,7 +173,12 @@ func (r *RunList) View() string {
 	if r.Compact {
 		linesPerRun = 1
 	}
-	visibleRuns := (r.height - 3) / linesPerRun
+	
+	headerLines := 3
+	if r.commit != nil {
+		headerLines += 2
+	}
+	visibleRuns := (r.height - headerLines) / linesPerRun
 	if visibleRuns < 1 {
 		visibleRuns = 1
 	}

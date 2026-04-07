@@ -10,9 +10,10 @@ type ReposLoadedMsg struct {
 }
 
 type RunsLoadedMsg struct {
-	Repo string
-	Runs []models.WorkflowRun
-	Err  error
+	Repo   string
+	Runs   []models.WorkflowRun
+	Commit *models.Commit
+	Err    error
 }
 
 type RunDetailLoadedMsg struct {

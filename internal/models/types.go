@@ -9,6 +9,15 @@ type Repo struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
+type Commit struct {
+	SHA     string `json:"sha"`
+	Message string `json:"message"`
+	Author  struct {
+		Name  string    `json:"name"`
+		Date  time.Time `json:"date"`
+	} `json:"author"`
+}
+
 type WorkflowRun struct {
 	ID           int64     `json:"databaseId"`
 	Name         string    `json:"name"`

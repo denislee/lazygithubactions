@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -41,9 +42,6 @@ type RepoStatusMsg struct {
 	Status     string
 	Conclusion string
 }
-
-// BgPollTickMsg triggers the next batch of background status fetches.
-type BgPollTickMsg struct{}
 
 // ActiveRunDetailMsg carries a polled in-progress run detail for the status bar.
 type ActiveRunDetailMsg struct {
@@ -95,8 +93,6 @@ type App struct {
 	err          error
 	message      string
 
-	bgPollIdx int // next repo index to poll in background
-
 	// Debounce: when navigating repos quickly, defer loading runs until cursor settles
 	pendingRepo string
 	cancelRuns  context.CancelFunc // cancels the in-flight loadRuns request
@@ -138,7 +134,7 @@ func (a App) Init() tea.Cmd {
 		}
 	}
 	return tea.Batch(
-		a.loadRepos(),
+		a.loadRepos(false),
 		a.tick(),
 		a.spinner.Tick,
 	)
@@ -212,8 +208,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, a.loadRuns(repo.FullName))
 			}
 			// Kick off background status polling for all repos immediately
-			a.bgPollIdx = 0
-			cmds = append(cmds, a.bgPollBatch())
 		}
 
 	case RepoDebounceMsg:
@@ -242,7 +236,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.err = msg.Err
 			a.statusBar.SetMessage("Error: "+msg.Err.Error(), true)
 		} else {
-			a.runList.SetRuns(msg.Runs, msg.Repo)
+			a.runList.SetRuns(msg.Runs, msg.Commit, msg.Repo)
 			a.lastRepo = msg.Repo
 			// Track last run status for repo icon
 			if len(msg.Runs) > 0 {
@@ -356,9 +350,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.loadingRuns = true
 			cmds = append(cmds, a.loadRuns(repo.FullName))
 		}
-		// Restart background polling for the new org's repos
-		a.bgPollIdx = 0
-		cmds = append(cmds, a.bgPollBatch())
 
 	case components.QuickSwitchResultMsg:
 		a.quickSwitch = nil
@@ -368,7 +359,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.repoList.SelectByName(msg.Repo.FullName)
 			a.activePanel = runPanel
 			a.loadingRuns = true
-			a.runList.SetRuns(nil, msg.Repo.FullName)
+			a.runList.SetRuns(nil, nil, msg.Repo.FullName)
 			cmds = append(cmds, a.loadRuns(msg.Repo.FullName))
 		} else {
 			a.ActiveView = a.previousView
@@ -411,9 +402,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RepoStatusMsg:
 		a.repoList.SetRepoStatus(msg.Repo, msg.Status, msg.Conclusion)
 		gh.SaveRunStatus(msg.Repo, msg.Status, msg.Conclusion)
-
-	case BgPollTickMsg:
-		cmds = append(cmds, a.bgPollBatch())
 
 	case ActiveRunDetailMsg:
 		if msg.Detail == nil || a.activeRunID == 0 {
@@ -479,7 +467,10 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, theme.Keys.Refresh):
 		a.loadingRepos = true
 		a.loadingRuns = true
-		return a, tea.Batch(a.loadRepos(), a.refreshCurrent())
+		if a.lastRepo != "" {
+			return a, tea.Batch(a.loadRepos(true), a.refreshCurrent())
+		}
+		return a, a.refreshCurrent()
 
 	case key.Matches(msg, theme.Keys.Enter) || msg.String() == "l":
 		if a.activePanel == orgPanel {
@@ -607,7 +598,7 @@ func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// Debounce: defer loading runs until cursor settles (150ms)
 			a.pendingRepo = repo.FullName
 			a.loadingRuns = true
-			a.runList.SetRuns(nil, repo.FullName) // clear stale data immediately
+			a.runList.SetRuns(nil, nil, repo.FullName) // clear stale data immediately
 			cmds = append(cmds, a.debounceRepo(repo.FullName))
 		}
 	case runPanel:
@@ -897,25 +888,13 @@ func (a *App) cyclePanel() {
 
 // --- Commands ---
 
-func (a *App) loadRepos() tea.Cmd {
-	repos, expired, err := gh.LoadCachedRepos()
-	if err == nil && repos != nil {
-		if expired {
-			return tea.Batch(
-				func() tea.Msg { return ReposLoadedMsg{Repos: repos} },
-				func() tea.Msg {
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer cancel()
-					if fresh, err := a.client.ListRepos(ctx); err == nil {
-						_ = gh.SaveCachedRepos(fresh)
-						return ReposLoadedMsg{Repos: fresh}
-					}
-					return nil
-				},
-			)
-		}
-		return func() tea.Msg {
-			return ReposLoadedMsg{Repos: repos}
+func (a *App) loadRepos(forceRefresh bool) tea.Cmd {
+	if !forceRefresh {
+		repos, _, err := gh.LoadCachedRepos()
+		if err == nil && repos != nil {
+			return func() tea.Msg {
+				return ReposLoadedMsg{Repos: repos}
+			}
 		}
 	}
 	return func() tea.Msg {
@@ -938,12 +917,35 @@ func (a *App) loadRuns(repo string) tea.Cmd {
 	a.cancelRuns = cancel
 	return func() tea.Msg {
 		defer cancel()
-		runs, err := a.client.ListRuns(ctx, repo)
+		
+		var runs []models.WorkflowRun
+		var runsErr error
+		var commit *models.Commit
+		var commitErr error
+		var wg sync.WaitGroup
+		
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			runs, runsErr = a.client.ListRuns(ctx, repo)
+		}()
+		go func() {
+			defer wg.Done()
+			commit, commitErr = a.client.GetLatestCommit(ctx, repo)
+		}()
+		wg.Wait()
+
 		if ctx.Err() != nil {
 			// Request was cancelled — return a no-op result
 			return RunsLoadedMsg{Repo: repo, Err: ctx.Err()}
 		}
-		return RunsLoadedMsg{Repo: repo, Runs: runs, Err: err}
+		
+		err := runsErr
+		if err == nil && commitErr != nil {
+			// Ignore commit errors (e.g. if repo is empty or API fails)
+			// just proceed with runs
+		}
+		return RunsLoadedMsg{Repo: repo, Runs: runs, Commit: commit, Err: err}
 	}
 }
 
@@ -1066,7 +1068,7 @@ func (a *App) refreshCurrent() tea.Cmd {
 	if a.lastRepo != "" {
 		return a.loadRuns(a.lastRepo)
 	}
-	return a.loadRepos()
+	return a.loadRepos(true)
 }
 
 func (a *App) debounceRepo(repo string) tea.Cmd {
@@ -1082,7 +1084,7 @@ func (a *App) selectRepo() tea.Cmd {
 	}
 	a.activePanel = runPanel
 	a.loadingRuns = true
-	a.runList.SetRuns(nil, repo.FullName) // clear stale data
+	a.runList.SetRuns(nil, nil, repo.FullName) // clear stale data
 	return a.loadRuns(repo.FullName)
 }
 
@@ -1090,32 +1092,6 @@ func (a *App) tick() tea.Cmd {
 	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
 		return TickMsg{}
 	})
-}
-
-func (a *App) bgPollTick() tea.Cmd {
-	return tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
-		return BgPollTickMsg{}
-	})
-}
-
-// bgPollBatch fetches status for the next batch of repos and schedules the next tick.
-func (a *App) bgPollBatch() tea.Cmd {
-	repos := a.repos // org-filtered repos
-	if len(repos) == 0 {
-		return a.bgPollTick()
-	}
-	batchSize := 5
-	if batchSize > len(repos) {
-		batchSize = len(repos)
-	}
-	var fetchCmds []tea.Cmd
-	for i := 0; i < batchSize; i++ {
-		idx := (a.bgPollIdx + i) % len(repos)
-		fetchCmds = append(fetchCmds, a.fetchRepoStatus(repos[idx].FullName))
-	}
-	a.bgPollIdx = (a.bgPollIdx + batchSize) % len(repos)
-	fetchCmds = append(fetchCmds, a.bgPollTick())
-	return tea.Batch(fetchCmds...)
 }
 
 func (a *App) activeRunTick() tea.Cmd {
@@ -1165,3 +1141,4 @@ func (a *App) fetchRepoStatus(repo string) tea.Cmd {
 		return RepoStatusMsg{Repo: repo, Status: status, Conclusion: conclusion}
 	}
 }
+
