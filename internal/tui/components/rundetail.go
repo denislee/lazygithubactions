@@ -124,6 +124,20 @@ func (d *RunDetail) visibleLines() []visibleLine {
 	return lines
 }
 
+func (d *RunDetail) SelectedJob() *models.Job {
+	if d.detail == nil {
+		return nil
+	}
+	lines := d.visibleLines()
+	if d.cursor >= 0 && d.cursor < len(lines) {
+		line := lines[d.cursor]
+		if line.jobIdx >= 0 && line.jobIdx < len(d.detail.Jobs) {
+			return &d.detail.Jobs[line.jobIdx]
+		}
+	}
+	return nil
+}
+
 func (d *RunDetail) Update(msg tea.Msg) tea.Cmd {
 	if d.detail == nil {
 		return nil

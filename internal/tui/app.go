@@ -3,14 +3,10 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strings"
-	"sync"
-	"time"
+	"log"
 
-	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/dns/lazygithubactions/internal/gh"
 	"github.com/dns/lazygithubactions/internal/models"
 	"github.com/dns/lazygithubactions/internal/tui/components"
@@ -35,6 +31,8 @@ const (
 	TriggerView
 	ConfirmView
 )
+
+// --- App-local message types ---
 
 // RepoStatusMsg carries a single repo's latest run status from the background poller.
 type RepoStatusMsg struct {
@@ -62,8 +60,12 @@ type RepoDebounceMsg struct {
 	Repo string
 }
 
+// --- App ---
+
 type App struct {
-	client      *gh.Client
+	client *gh.Client
+	dur    Durations
+
 	orgSelector components.OrgSelector
 	repoList    components.RepoList
 	runList     components.RunList
@@ -82,22 +84,23 @@ type App struct {
 	width        int
 	height       int
 
-	lastRepo    string
-	allRepos    []models.Repo // all repos from API
-	repos       []models.Repo // filtered by org for QuickSwitch
-	selectedOrg string
+	lastRepo           string
+	allRepos           []models.Repo // all repos from API
+	repos              []models.Repo // filtered by org for QuickSwitch
+	selectedOrg        string
+	currentRepo        *models.Repo // detected repository for the current directory
+	currentRepoChecked bool         // true once loadCurrentRepo has returned (success or nil)
 
 	loadingRepos bool
 	loadingRuns  bool
 	spinner      spinner.Model
 	err          error
-	message      string
 
-	// Debounce: when navigating repos quickly, defer loading runs until cursor settles
+	// Debounce: when navigating repos quickly, defer loading runs until cursor settles.
 	pendingRepo string
 	cancelRuns  context.CancelFunc // cancels the in-flight loadRuns request
 
-	// Active run tracking: when an in-progress run is detected, poll its detail
+	// Active run tracking: when an in-progress run is detected, poll its detail.
 	activeRunID   int64
 	activeRunRepo string
 }
@@ -109,14 +112,15 @@ func NewApp() App {
 	cfg := gh.LoadConfig()
 
 	app := App{
-		client:      gh.NewClient(),
-		orgSelector: components.NewOrgSelector(),
-		repoList:    components.NewRepoList(),
-		runList:     components.NewRunList(),
-		runDetail:   components.NewRunDetail(),
-		logViewer:   components.NewLogViewer(),
-		statusBar:   components.NewStatusBar(),
-		spinner:     s,
+		client:       gh.NewClient(),
+		dur:          DefaultDurations,
+		orgSelector:  components.NewOrgSelector(),
+		repoList:     components.NewRepoList(),
+		runList:      components.NewRunList(),
+		runDetail:    components.NewRunDetail(),
+		logViewer:    components.NewLogViewer(),
+		statusBar:    components.NewStatusBar(),
+		spinner:      s,
 		activePanel:  repoPanel,
 		ActiveView:   MainView,
 		selectedOrg:  cfg.SelectedOrg,
@@ -127,13 +131,14 @@ func NewApp() App {
 }
 
 func (a App) Init() tea.Cmd {
-	// Seed repo list with cached run statuses
+	// Seed repo list with cached run statuses.
 	if entries, err := gh.LoadCachedRunStatuses(); err == nil && entries != nil {
 		for repo, e := range entries {
 			a.repoList.SetRepoStatus(repo, e.Status, e.Conclusion)
 		}
 	}
 	return tea.Batch(
+		a.loadCurrentRepo(),
 		a.loadRepos(false),
 		a.tick(),
 		a.spinner.Tick,
@@ -156,45 +161,59 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, cmd
 
 	case tea.KeyPressMsg:
-		// Ctrl+C always quits, no matter what view
+		// Ctrl+C always quits, no matter what view.
 		if msg.String() == "ctrl+c" {
 			return a, tea.Quit
 		}
 
-		// Normalize ctrl+[ to esc globally
+		// Normalize ctrl+[ to esc globally.
 		if msg.String() == "ctrl+[" {
 			msg = tea.KeyPressMsg{Code: 27} // ESC
 		}
 
-		// q quits only outside overlays
+		// q quits only outside overlays, and not while searching in the log viewer.
 		if msg.String() == "q" && a.ActiveView != QuickSwitchView &&
-			a.ActiveView != TriggerView && a.ActiveView != ConfirmView {
+			a.ActiveView != TriggerView && a.ActiveView != ConfirmView &&
+			!(a.ActiveView == LogView && a.logViewer.InSearchMode()) {
 			return a, tea.Quit
 		}
 
 		switch a.ActiveView {
 		case MainView:
 			return a.updateMainView(msg)
-
 		case DetailView:
 			return a.updateDetailView(msg)
-
 		case LogView:
 			return a.updateLogView(msg)
-
 		case QuickSwitchView:
 			return a.updateQuickSwitchView(msg)
-
 		case TriggerView:
 			return a.updateTriggerView(msg)
-
 		case ConfirmView:
 			return a.updateConfirmView(msg)
+		}
+
+	case CurrentRepoLoadedMsg:
+		a.currentRepoChecked = true
+		if msg.Err != nil {
+			log.Printf("detect current repo: %v", msg.Err)
+		} else if msg.Repo != nil {
+			a.currentRepo = msg.Repo
+		}
+		// If repos are already loaded, trigger the appropriate initial selection now.
+		if len(a.allRepos) > 0 {
+			if a.currentRepo != nil {
+				cmds = append(cmds, a.autoSelectCurrentRepo()...)
+			} else if repo := a.repoList.SelectedRepo(); repo != nil && a.lastRepo == "" {
+				a.loadingRuns = true
+				cmds = append(cmds, a.loadRuns(repo.FullName))
+			}
 		}
 
 	case ReposLoadedMsg:
 		a.loadingRepos = false
 		if msg.Err != nil {
+			log.Printf("list repos: %v", msg.Err)
 			a.err = msg.Err
 			a.statusBar.SetMessage("Error: "+msg.Err.Error(), true)
 		} else {
@@ -203,31 +222,37 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.orgSelector.SelectOrg(a.selectedOrg)
 			a.filterReposByOrg()
 			a.statusBar.Clear()
-			if repo := a.repoList.SelectedRepo(); repo != nil {
+
+			// Wait for current-repo detection before choosing which repo to load.
+			// This avoids racing loadRuns(firstRepo) with loadRuns(currentRepo).
+			if a.currentRepoChecked {
+				if a.currentRepo != nil {
+					cmds = append(cmds, a.autoSelectCurrentRepo()...)
+				} else if repo := a.repoList.SelectedRepo(); repo != nil {
+					a.loadingRuns = true
+					cmds = append(cmds, a.loadRuns(repo.FullName))
+				}
+			} else {
 				a.loadingRuns = true
-				cmds = append(cmds, a.loadRuns(repo.FullName))
 			}
-			// Kick off background status polling for all repos immediately
 		}
 
 	case RepoDebounceMsg:
-		// Only load if the cursor is still on this repo (debounce)
+		// Only load if the cursor is still on this repo (debounce).
 		if repo := a.repoList.SelectedRepo(); repo != nil && repo.FullName == msg.Repo && a.pendingRepo == msg.Repo {
 			a.pendingRepo = ""
 			cmds = append(cmds, a.loadRuns(msg.Repo))
-		} else {
-			// Cursor moved on; skip this stale debounce
-			if a.pendingRepo != msg.Repo {
-				a.loadingRuns = false
-			}
+		} else if a.pendingRepo != msg.Repo {
+			// Cursor moved on; skip this stale debounce.
+			a.loadingRuns = false
 		}
 
 	case RunsLoadedMsg:
-		// Ignore stale responses from repos we've navigated away from
+		// Ignore stale responses from repos we've navigated away from.
 		if repo := a.repoList.SelectedRepo(); repo != nil && repo.FullName != msg.Repo && msg.Repo != a.lastRepo {
 			return a, tea.Batch(cmds...)
 		}
-		// Silently discard cancelled requests (user navigated away)
+		// Silently discard cancelled requests (user navigated away).
 		if msg.Err != nil && msg.Err == context.Canceled {
 			return a, tea.Batch(cmds...)
 		}
@@ -238,12 +263,12 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			a.runList.SetRuns(msg.Runs, msg.Commit, msg.Repo)
 			a.lastRepo = msg.Repo
-			// Track last run status for repo icon
+			// Track last run status for repo icon.
 			if len(msg.Runs) > 0 {
 				r := msg.Runs[0]
 				a.repoList.SetRepoStatus(msg.Repo, r.Status, r.Conclusion)
-				// If the latest run is in-progress, start tracking it
-				if r.Status == "in_progress" || r.Status == "queued" || r.Status == "waiting" {
+				// If the latest run is in-progress, start tracking it.
+				if isActiveStatus(r.Status) {
 					if a.activeRunID != r.ID {
 						a.activeRunID = r.ID
 						a.activeRunRepo = msg.Repo
@@ -345,7 +370,7 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.selectedOrg = msg.Org
 		a.filterReposByOrg()
 		_ = gh.SaveConfig(gh.UserConfig{SelectedOrg: msg.Org})
-		// Load runs for first repo in filtered list
+		// Load runs for first repo in filtered list.
 		if repo := a.repoList.SelectedRepo(); repo != nil {
 			a.loadingRuns = true
 			cmds = append(cmds, a.loadRuns(repo.FullName))
@@ -387,7 +412,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case ActionResultMsg:
-		a.message = msg.Message
 		a.statusBar.SetMessage(msg.Message, !msg.Success)
 		if msg.Success {
 			cmds = append(cmds, a.refreshCurrent())
@@ -408,42 +432,19 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		run := msg.Detail
-		if run.Status != "in_progress" && run.Status != "queued" && run.Status != "waiting" {
-			// Run finished
+		if !isActiveStatus(run.Status) {
+			// Run finished.
 			a.activeRunID = 0
 			a.activeRunRepo = ""
 			icon := theme.StatusIcon(run.Status, run.Conclusion)
-			a.statusBar.SetMessage(fmt.Sprintf("%s %s completed: %s", icon, run.WorkflowName, run.Conclusion), run.Conclusion == "failure")
+			a.statusBar.SetMessage(
+				fmt.Sprintf("%s %s completed: %s", icon, run.WorkflowName, run.Conclusion),
+				run.Conclusion == "failure",
+			)
 			cmds = append(cmds, a.refreshCurrent())
 			break
 		}
-		// Find the currently running step
-		var activeJob, activeStep string
-		for _, job := range run.Jobs {
-			if job.Status == "in_progress" {
-				activeJob = job.Name
-				for _, step := range job.Steps {
-					if step.Status == "in_progress" {
-						activeStep = step.Name
-						break
-					}
-				}
-				break
-			}
-			if job.Status == "queued" || job.Status == "waiting" {
-				if activeJob == "" {
-					activeJob = job.Name
-				}
-			}
-		}
-		statusMsg := fmt.Sprintf("● %s", run.WorkflowName)
-		if activeJob != "" {
-			statusMsg += fmt.Sprintf(" → %s", activeJob)
-		}
-		if activeStep != "" {
-			statusMsg += fmt.Sprintf(" → %s", activeStep)
-		}
-		a.statusBar.SetMessage(statusMsg, false)
+		a.statusBar.SetMessage(formatActiveRun(run), false)
 
 	case ActiveRunTickMsg:
 		if a.activeRunID != 0 {
@@ -454,691 +455,35 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, tea.Batch(cmds...)
 }
 
-// --- View-specific update handlers ---
+// isActiveStatus reports whether a run is still executing.
+func isActiveStatus(s string) bool {
+	return s == "in_progress" || s == "queued" || s == "waiting"
+}
 
-func (a App) updateMainView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
-	switch {
-	case key.Matches(msg, theme.Keys.Tab):
-		a.cyclePanel()
-		return a, nil
-
-	case key.Matches(msg, theme.Keys.Refresh):
-		a.loadingRepos = true
-		a.loadingRuns = true
-		if a.lastRepo != "" {
-			return a, tea.Batch(a.loadRepos(true), a.refreshCurrent())
-		}
-		return a, a.refreshCurrent()
-
-	case key.Matches(msg, theme.Keys.Enter) || msg.String() == "l":
-		if a.activePanel == orgPanel {
-			// enter/l on org: move to repo panel
-			a.activePanel = repoPanel
-			return a, nil
-		}
-		if a.activePanel == repoPanel {
-			repo := a.repoList.SelectedRepo()
-			if repo == nil {
-				return a, nil
+// formatActiveRun builds the status-bar line for an in-progress run.
+func formatActiveRun(run *models.RunDetail) string {
+	var activeJob, activeStep string
+	for _, job := range run.Jobs {
+		if job.Status == "in_progress" {
+			activeJob = job.Name
+			for _, step := range job.Steps {
+				if step.Status == "in_progress" {
+					activeStep = step.Name
+					break
+				}
 			}
-			a.activePanel = runPanel
-			// Only reload if switching to a different repo
-			if repo.FullName != a.lastRepo {
-				return a, a.selectRepo()
-			}
-			return a, nil
+			break
 		}
-		// l or enter on run panel: drill into run detail
-		if run := a.runList.SelectedRun(); run != nil {
-			a.statusBar.SetMessage("Loading run details...", false)
-			return a, a.loadRunDetail(run.ID)
-		}
-
-	case msg.String() == "h":
-		if a.activePanel == runPanel {
-			a.activePanel = repoPanel
-			return a, nil
-		}
-		if a.activePanel == repoPanel {
-			a.activePanel = orgPanel
-			return a, nil
-		}
-
-	case msg.String() == "v":
-		a.runList.ToggleCompact()
-		_ = gh.SaveConfig(gh.UserConfig{SelectedOrg: a.selectedOrg, CompactView: a.runList.Compact})
-		return a, nil
-
-	case key.Matches(msg, theme.Keys.Trigger):
-		if a.lastRepo != "" {
-			a.statusBar.SetMessage("Loading workflows...", false)
-			return a, a.loadWorkflows()
-		}
-
-	case key.Matches(msg, theme.Keys.Cancel):
-		if run := a.runList.SelectedRun(); run != nil {
-			cd := components.NewConfirmDialog(
-				"Cancel Run",
-				fmt.Sprintf("Cancel run #%d?", run.ID),
-				"cancel",
-				run.ID,
-			)
-			a.confirmDlg = &cd
-			a.ActiveView = ConfirmView
-			return a, nil
-		}
-
-	case key.Matches(msg, theme.Keys.Rerun):
-		if run := a.runList.SelectedRun(); run != nil {
-			cd := components.NewConfirmDialog(
-				"Rerun Failed",
-				fmt.Sprintf("Rerun failed jobs for run #%d?", run.ID),
-				"rerun",
-				run.ID,
-			)
-			a.confirmDlg = &cd
-			a.ActiveView = ConfirmView
-			return a, nil
-		}
-
-	case key.Matches(msg, theme.Keys.Logs):
-		if run := a.runList.SelectedRun(); run != nil {
-			a.previousView = MainView
-			a.statusBar.SetMessage("Loading logs...", false)
-			return a, a.loadRunLog(run.ID)
-		}
-
-	case key.Matches(msg, theme.Keys.Download):
-		if run := a.runList.SelectedRun(); run != nil {
-			cd := components.NewConfirmDialog(
-				"Download Artifacts",
-				fmt.Sprintf("Download artifacts for run #%d?", run.ID),
-				"download",
-				run.ID,
-			)
-			a.confirmDlg = &cd
-			a.ActiveView = ConfirmView
-			return a, nil
-		}
-
-	case key.Matches(msg, theme.Keys.QuickSwitch):
-		qs := components.NewQuickSwitch(a.repos)
-		a.quickSwitch = &qs
-		a.previousView = MainView
-		a.ActiveView = QuickSwitchView
-		return a, a.quickSwitch.Init()
-	}
-
-	// Forward to active panel for navigation, with boundary transitions
-	switch a.activePanel {
-	case orgPanel:
-		// If at bottom of org list and pressing down/j, move to repo panel
-		if a.orgSelector.AtBottom() && key.Matches(msg, theme.Keys.Down) {
-			a.activePanel = repoPanel
-			return a, nil
-		}
-		cmd := a.orgSelector.Update(msg)
-		cmds = append(cmds, cmd)
-	case repoPanel:
-		// If at top of repo list and pressing up/k, move to org panel
-		if a.repoList.AtTop() && key.Matches(msg, theme.Keys.Up) {
-			a.activePanel = orgPanel
-			return a, nil
-		}
-		cmd := a.repoList.Update(msg)
-		cmds = append(cmds, cmd)
-		if repo := a.repoList.SelectedRepo(); repo != nil && repo.FullName != a.lastRepo {
-			// Cancel any in-flight runs request immediately
-			if a.cancelRuns != nil {
-				a.cancelRuns()
-				a.cancelRuns = nil
-			}
-			// Debounce: defer loading runs until cursor settles (150ms)
-			a.pendingRepo = repo.FullName
-			a.loadingRuns = true
-			a.runList.SetRuns(nil, nil, repo.FullName) // clear stale data immediately
-			cmds = append(cmds, a.debounceRepo(repo.FullName))
-		}
-	case runPanel:
-		cmd := a.runList.Update(msg)
-		cmds = append(cmds, cmd)
-	}
-
-	return a, tea.Batch(cmds...)
-}
-
-func (a App) updateDetailView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, theme.Keys.Back) || msg.String() == "h":
-		a.ActiveView = MainView
-		return a, nil
-
-	case key.Matches(msg, theme.Keys.Logs) || msg.String() == "l":
-		if run := a.runList.SelectedRun(); run != nil {
-			a.previousView = DetailView
-			a.statusBar.SetMessage("Loading logs...", false)
-			return a, a.loadRunLog(run.ID)
-		}
-
-	case key.Matches(msg, theme.Keys.Rerun):
-		if run := a.runList.SelectedRun(); run != nil {
-			cd := components.NewConfirmDialog(
-				"Rerun Failed",
-				fmt.Sprintf("Rerun failed jobs for run #%d?", run.ID),
-				"rerun",
-				run.ID,
-			)
-			a.confirmDlg = &cd
-			a.ActiveView = ConfirmView
-			return a, nil
-		}
-
-	case key.Matches(msg, theme.Keys.Cancel):
-		if run := a.runList.SelectedRun(); run != nil {
-			cd := components.NewConfirmDialog(
-				"Cancel Run",
-				fmt.Sprintf("Cancel run #%d?", run.ID),
-				"cancel",
-				run.ID,
-			)
-			a.confirmDlg = &cd
-			a.ActiveView = ConfirmView
-			return a, nil
-		}
-
-	case key.Matches(msg, theme.Keys.Refresh):
-		if run := a.runList.SelectedRun(); run != nil {
-			a.statusBar.SetMessage("Refreshing...", false)
-			return a, a.refreshRunDetail(run.ID)
-		}
-
-	case key.Matches(msg, theme.Keys.QuickSwitch):
-		qs := components.NewQuickSwitch(a.repos)
-		a.quickSwitch = &qs
-		a.previousView = DetailView
-		a.ActiveView = QuickSwitchView
-		return a, a.quickSwitch.Init()
-	}
-
-	cmd := a.runDetail.Update(msg)
-	return a, cmd
-}
-
-func (a App) updateLogView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// Ensure log viewer has correct dimensions before processing keys
-	a.logViewer.SetSize(a.width, a.height)
-
-	// Don't intercept keys while searching or in visual mode
-	if !a.logViewer.InSearchMode() {
-		// h always goes back
-		if msg.String() == "h" {
-			a.ActiveView = a.previousView
-			return a, nil
-		}
-		// esc goes back only if not in visual mode
-		if key.Matches(msg, theme.Keys.Back) && !a.logViewer.InVisualMode() {
-			a.ActiveView = a.previousView
-			return a, nil
+		if (job.Status == "queued" || job.Status == "waiting") && activeJob == "" {
+			activeJob = job.Name
 		}
 	}
-
-	cmd := a.logViewer.Update(msg)
-	return a, cmd
+	out := fmt.Sprintf("● %s", run.WorkflowName)
+	if activeJob != "" {
+		out += fmt.Sprintf(" → %s", activeJob)
+	}
+	if activeStep != "" {
+		out += fmt.Sprintf(" → %s", activeStep)
+	}
+	return out
 }
-
-func (a App) updateQuickSwitchView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if a.quickSwitch == nil {
-		a.ActiveView = MainView
-		return a, nil
-	}
-	if msg.String() == "ctrl+k" {
-		a.ActiveView = MainView
-		a.quickSwitch = nil
-		return a, nil
-	}
-	qs, cmd := a.quickSwitch.Update(msg)
-	a.quickSwitch = &qs
-	return a, cmd
-}
-
-func (a App) updateTriggerView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if a.triggerDlg == nil {
-		a.ActiveView = MainView
-		return a, nil
-	}
-	td, cmd := a.triggerDlg.Update(msg)
-	a.triggerDlg = &td
-	return a, cmd
-}
-
-func (a App) updateConfirmView(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if a.confirmDlg == nil {
-		a.ActiveView = MainView
-		return a, nil
-	}
-	cd, cmd := a.confirmDlg.Update(msg)
-	a.confirmDlg = &cd
-	return a, cmd
-}
-
-// --- View ---
-
-func (a App) View() tea.View {
-	if a.width == 0 {
-		v := tea.NewView("Loading...")
-		v.AltScreen = true
-		return v
-	}
-
-	var content string
-
-	switch a.ActiveView {
-	case DetailView:
-		a.runDetail.SetSize(a.width, a.height-2)
-		content = lipgloss.JoinVertical(lipgloss.Left,
-			a.runDetail.View(),
-			a.statusBar.View(),
-			components.HelpBar(a.width, "detail"),
-		)
-
-	case LogView:
-		a.logViewer.SetSize(a.width, a.height)
-		content = a.logViewer.View()
-
-	default: // MainView and overlay views
-		content = a.renderMainLayout()
-	}
-
-	v := tea.NewView(content)
-	v.AltScreen = true
-	return v
-}
-
-func (a App) renderMainLayout() string {
-	leftWidth := a.width / 4
-	if leftWidth < 20 {
-		leftWidth = 20
-	}
-	runWidth := a.width - leftWidth
-	totalHeight := a.height - 2
-	innerWidth := leftWidth - 4
-
-	a.orgSelector.SetFocused(a.activePanel == orgPanel)
-	a.repoList.SetFocused(a.activePanel == repoPanel)
-	a.runList.SetFocused(a.activePanel == runPanel)
-
-	// Build left panel content: org + divider + repos in a single frame
-	orgContent := a.orgSelector.ViewContent()
-	divider := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666")).
-		Render(strings.Repeat("─", innerWidth))
-
-	var repoContent string
-	if a.loadingRepos {
-		repoContent = theme.TitleStyle.Render("Repositories") + "\n"
-		repoContent += "  " + a.spinner.View() + " Loading..."
-	} else {
-		repoContent = a.repoList.ViewContent()
-	}
-
-	leftContent := orgContent + divider + "\n" + repoContent
-
-	focused := a.activePanel == orgPanel || a.activePanel == repoPanel
-	leftStyle := theme.PanelStyle
-	if focused {
-		leftStyle = theme.ActivePanelStyle
-	}
-	leftCol := leftStyle.Width(leftWidth).Height(totalHeight).Render(leftContent)
-
-	runView := a.runList.View()
-	if a.loadingRuns {
-		runView = a.renderLoadingPanel(fmt.Sprintf("Workflow Runs — %s", a.runList.Repo()), runWidth, totalHeight, a.activePanel == runPanel)
-	}
-
-	panels := lipgloss.JoinHorizontal(lipgloss.Top, leftCol, runView)
-
-	mainContent := lipgloss.JoinVertical(lipgloss.Left,
-		panels,
-		a.statusBar.View(),
-		components.HelpBar(a.width, ""),
-	)
-
-	switch {
-	case a.ActiveView == QuickSwitchView && a.quickSwitch != nil:
-		return a.renderOverlay(mainContent, a.quickSwitch.View())
-	case a.ActiveView == TriggerView && a.triggerDlg != nil:
-		return a.renderOverlay(mainContent, a.triggerDlg.View())
-	case a.ActiveView == ConfirmView && a.confirmDlg != nil:
-		return a.renderOverlay(mainContent, a.confirmDlg.View())
-	default:
-		return mainContent
-	}
-}
-
-func (a App) renderLoadingPanel(title string, width, height int, focused bool) string {
-	content := theme.TitleStyle.Render(title) + "\n\n"
-	content += "  " + a.spinner.View() + " Loading..."
-	style := theme.PanelStyle
-	if focused {
-		style = theme.ActivePanelStyle
-	}
-	return style.Width(width).Height(height).Render(content)
-}
-
-func (a App) renderOverlay(_ string, overlay string) string {
-	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, overlay)
-}
-
-// --- Helpers ---
-
-func (a *App) filterReposByOrg() {
-	if a.selectedOrg == "" {
-		a.repos = a.allRepos
-	} else {
-		a.repos = nil
-		for _, r := range a.allRepos {
-			if r.Owner == a.selectedOrg {
-				a.repos = append(a.repos, r)
-			}
-		}
-	}
-	a.repoList.SetRepos(a.repos)
-}
-
-func (a *App) layoutComponents() {
-	a.statusBar.SetWidth(a.width)
-
-	leftWidth := a.width / 4
-	if leftWidth < 20 {
-		leftWidth = 20
-	}
-	runWidth := a.width - leftWidth
-	totalHeight := a.height - 2
-
-	innerWidth := leftWidth - 4
-	orgContentLines := min(a.orgSelector.OrgCount(), 5)
-	if orgContentLines < 1 {
-		orgContentLines = 1
-	}
-	orgSectionHeight := orgContentLines + 1
-
-	repoContentHeight := totalHeight - 2 - orgSectionHeight - 1
-	if repoContentHeight < 3 {
-		repoContentHeight = 3
-	}
-
-	a.orgSelector.SetSize(innerWidth, orgContentLines)
-	a.repoList.SetSize(innerWidth, repoContentHeight-1)
-	a.runList.SetSize(runWidth, totalHeight)
-	a.runDetail.SetSize(a.width, a.height-2)
-	a.logViewer.SetSize(a.width, a.height)
-}
-
-func (a *App) cyclePanel() {
-	switch a.activePanel {
-	case orgPanel:
-		a.activePanel = repoPanel
-	case repoPanel:
-		a.activePanel = runPanel
-	case runPanel:
-		a.activePanel = orgPanel
-	}
-}
-
-// --- Commands ---
-
-func (a *App) loadRepos(forceRefresh bool) tea.Cmd {
-	if !forceRefresh {
-		repos, _, err := gh.LoadCachedRepos()
-		if err == nil && repos != nil {
-			return func() tea.Msg {
-				return ReposLoadedMsg{Repos: repos}
-			}
-		}
-	}
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		repos, err := a.client.ListRepos(ctx)
-		if err == nil {
-			_ = gh.SaveCachedRepos(repos)
-		}
-		return ReposLoadedMsg{Repos: repos, Err: err}
-	}
-}
-
-func (a *App) loadRuns(repo string) tea.Cmd {
-	// Cancel any in-flight request before starting a new one
-	if a.cancelRuns != nil {
-		a.cancelRuns()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	a.cancelRuns = cancel
-	return func() tea.Msg {
-		defer cancel()
-		
-		var runs []models.WorkflowRun
-		var runsErr error
-		var commit *models.Commit
-		var commitErr error
-		var wg sync.WaitGroup
-		
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			runs, runsErr = a.client.ListRuns(ctx, repo)
-		}()
-		go func() {
-			defer wg.Done()
-			commit, commitErr = a.client.GetLatestCommit(ctx, repo)
-		}()
-		wg.Wait()
-
-		if ctx.Err() != nil {
-			// Request was cancelled — return a no-op result
-			return RunsLoadedMsg{Repo: repo, Err: ctx.Err()}
-		}
-		
-		err := runsErr
-		if err == nil && commitErr != nil {
-			// Ignore commit errors (e.g. if repo is empty or API fails)
-			// just proceed with runs
-		}
-		return RunsLoadedMsg{Repo: repo, Runs: runs, Commit: commit, Err: err}
-	}
-}
-
-func (a *App) loadRunDetail(runID int64) tea.Cmd {
-	repo := a.lastRepo
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		detail, err := a.client.ViewRun(ctx, repo, runID)
-		return RunDetailLoadedMsg{Detail: detail, Err: err}
-	}
-}
-
-func (a *App) loadRunLog(runID int64) tea.Cmd {
-	repo := a.lastRepo
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		log, err := a.client.ViewRunLog(ctx, repo, runID)
-		return LogLoadedMsg{Log: log, Err: err}
-	}
-}
-
-func (a *App) loadWorkflows() tea.Cmd {
-	repo := a.lastRepo
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		wfs, err := a.client.ListWorkflows(ctx, repo)
-		return WorkflowsLoadedMsg{Workflows: wfs, Err: err}
-	}
-}
-
-func (a *App) cancelRun(runID int64) tea.Cmd {
-	repo := a.lastRepo
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		err := a.client.CancelRun(ctx, repo, runID)
-		if err != nil {
-			return ActionResultMsg{Action: "cancel", Success: false, Message: "Cancel failed: " + err.Error()}
-		}
-		return ActionResultMsg{Action: "cancel", Success: true, Message: "Run cancelled"}
-	}
-}
-
-func (a *App) rerunFailed(runID int64) tea.Cmd {
-	repo := a.lastRepo
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		err := a.client.RerunFailed(ctx, repo, runID)
-		if err != nil {
-			return ActionResultMsg{Action: "rerun", Success: false, Message: "Rerun failed: " + err.Error()}
-		}
-		return ActionResultMsg{Action: "rerun", Success: true, Message: "Re-running failed jobs"}
-	}
-}
-
-func (a *App) downloadArtifacts(runID int64) tea.Cmd {
-	repo := a.lastRepo
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		err := a.client.DownloadArtifacts(ctx, repo, runID, "")
-		if err != nil {
-			return ActionResultMsg{Action: "download", Success: false, Message: "Download failed: " + err.Error()}
-		}
-		return ActionResultMsg{Action: "download", Success: true, Message: "Artifacts downloaded"}
-	}
-}
-
-func (a *App) triggerWorkflow(file, branch string, inputs map[string]string) tea.Cmd {
-	repo := a.lastRepo
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		err := a.client.TriggerWorkflow(ctx, repo, file, branch, inputs)
-		if err != nil {
-			return ActionResultMsg{Action: "trigger", Success: false, Message: "Trigger failed: " + err.Error()}
-		}
-		return ActionResultMsg{Action: "trigger", Success: true, Message: "Workflow triggered"}
-	}
-}
-
-func (a *App) loadBranchesAndInputs(workflowPath string) tea.Cmd {
-	repo := a.lastRepo
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		var branches []string
-		var inputs []models.WorkflowInput
-		var branchErr, inputErr error
-
-		done := make(chan struct{}, 2)
-		go func() {
-			branches, branchErr = a.client.ListBranches(ctx, repo)
-			done <- struct{}{}
-		}()
-		go func() {
-			inputs, inputErr = a.client.GetWorkflowInputs(ctx, repo, workflowPath)
-			done <- struct{}{}
-		}()
-		<-done
-		<-done
-
-		if branchErr != nil {
-			return theme.BranchesAndInputsLoadedMsg{Err: branchErr}
-		}
-		if inputErr != nil {
-			// Non-fatal: workflow may not have inputs
-			return theme.BranchesAndInputsLoadedMsg{Branches: branches}
-		}
-		return theme.BranchesAndInputsLoadedMsg{Branches: branches, Inputs: inputs}
-	}
-}
-
-func (a *App) refreshCurrent() tea.Cmd {
-	if a.lastRepo != "" {
-		return a.loadRuns(a.lastRepo)
-	}
-	return a.loadRepos(true)
-}
-
-func (a *App) debounceRepo(repo string) tea.Cmd {
-	return tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
-		return RepoDebounceMsg{Repo: repo}
-	})
-}
-
-func (a *App) selectRepo() tea.Cmd {
-	repo := a.repoList.SelectedRepo()
-	if repo == nil {
-		return nil
-	}
-	a.activePanel = runPanel
-	a.loadingRuns = true
-	a.runList.SetRuns(nil, nil, repo.FullName) // clear stale data
-	return a.loadRuns(repo.FullName)
-}
-
-func (a *App) tick() tea.Cmd {
-	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
-		return TickMsg{}
-	})
-}
-
-func (a *App) activeRunTick() tea.Cmd {
-	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
-		return ActiveRunTickMsg{}
-	})
-}
-
-func (a *App) detailTick() tea.Cmd {
-	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
-		return theme.DetailTickMsg{}
-	})
-}
-
-func (a *App) refreshRunDetail(runID int64) tea.Cmd {
-	repo := a.lastRepo
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		detail, err := a.client.ViewRun(ctx, repo, runID)
-		return DetailRefreshMsg{Detail: detail, Err: err}
-	}
-}
-
-func (a *App) pollActiveRun() tea.Cmd {
-	repo := a.activeRunRepo
-	runID := a.activeRunID
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		detail, err := a.client.ViewRun(ctx, repo, runID)
-		if err != nil {
-			return nil
-		}
-		return ActiveRunDetailMsg{Detail: detail}
-	}
-}
-
-func (a *App) fetchRepoStatus(repo string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		status, conclusion, err := a.client.LatestRunStatus(ctx, repo)
-		if err != nil {
-			return nil
-		}
-		return RepoStatusMsg{Repo: repo, Status: status, Conclusion: conclusion}
-	}
-}
-

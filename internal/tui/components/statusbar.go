@@ -44,11 +44,11 @@ func HelpBar(width int, activeView string) string {
 	var help string
 	switch activeView {
 	case "detail":
-		help = "esc:back  j/k:nav  space:toggle  L:logs  R:rerun  C:cancel  s:skipped  ctrl+k:search  q:quit"
+		help = "esc:back  j/k:nav  space:toggle  L:logs  R:rerun  C:cancel  s:skipped  ctrl+o:browser  ctrl+k:search  q:quit"
 	case "log":
 		help = "esc:back  \u2191/\u2193:scroll  q:quit"
 	default:
-		help = "tab:switch  j/k:nav  enter:select  T:trigger  C:cancel  R:rerun  L:logs  D:download  r:refresh  ctrl+k:search  q:quit"
+		help = "tab:switch  j/k:nav  enter:select  T:trigger  C:cancel  R:rerun  L:logs  D:download  r:refresh  ctrl+o:browser  ctrl+k:search  q:quit"
 	}
 	return theme.HelpBarStyle.Width(width).Render(help)
 }

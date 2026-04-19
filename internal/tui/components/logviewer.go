@@ -91,10 +91,7 @@ func (l *LogViewer) SetContent(title, content string) {
 	l.searchHits = nil
 	l.searchIdx = -1
 	l.parseContent(content)
-	l.gutterWidth = len(fmt.Sprintf("%d", len(l.lines))) + 1
-	if l.gutterWidth < 4 {
-		l.gutterWidth = 4
-	}
+	l.gutterWidth = max(len(fmt.Sprintf("%d", len(l.lines)))+1, 4)
 }
 
 func (l *LogViewer) parseContent(content string) {
@@ -496,18 +493,6 @@ func (l *LogViewer) renderMessage(msg string) string {
 	return sb.String()
 }
 
-func (l *LogViewer) isSearchHit(lineIdx int) bool {
-	for _, h := range l.searchHits {
-		if h == lineIdx {
-			return true
-		}
-		if h > lineIdx {
-			break
-		}
-	}
-	return false
-}
-
 func (l *LogViewer) View() string {
 	innerWidth := l.width - 4 // borders + padding
 
@@ -525,10 +510,7 @@ func (l *LogViewer) View() string {
 	if l.logDate != "" {
 		rightHeader = logTimestampStyle.Render(l.logDate)
 	}
-	headerGap := innerWidth - lipgloss.Width(leftHeader) - lipgloss.Width(rightHeader)
-	if headerGap < 1 {
-		headerGap = 1
-	}
+	headerGap := max(innerWidth-lipgloss.Width(leftHeader)-lipgloss.Width(rightHeader), 1)
 	headerLine := leftHeader + strings.Repeat(" ", headerGap) + rightHeader
 
 	// Content area
@@ -567,10 +549,7 @@ func (l *LogViewer) View() string {
 		ts := ""
 		msgWidth := lipgloss.Width(msg)
 		if line.time != "" {
-			padding := contentWidth - msgWidth
-			if padding < 1 {
-				padding = 1
-			}
+			padding := max(contentWidth-msgWidth, 1)
 			ts = strings.Repeat(" ", padding) + line.time
 			// no separate styling for time here — it inherits from the line bg
 		} else {
@@ -601,10 +580,7 @@ func (l *LogViewer) View() string {
 			b.WriteString(logLineNumStyle.Render(num))
 			b.WriteString(styledMsg)
 			if line.time != "" {
-				padding := contentWidth - msgWidth
-				if padding < 1 {
-					padding = 1
-				}
+				padding := max(contentWidth-msgWidth, 1)
 				b.WriteString(strings.Repeat(" ", padding) + logTimestampStyle.Render(line.time))
 			}
 		}
@@ -647,10 +623,7 @@ func (l *LogViewer) View() string {
 	left := logModeStyle.Render(mode)
 	mid := logStatusText.Render(statusContent)
 	right := logStatusPos.Render(pos)
-	gap := innerWidth - lipgloss.Width(left) - lipgloss.Width(mid) - lipgloss.Width(right)
-	if gap < 0 {
-		gap = 0
-	}
+	gap := max(innerWidth-lipgloss.Width(left)-lipgloss.Width(mid)-lipgloss.Width(right), 0)
 	pad := logStatusBarBg.Width(gap).Render("")
 	bar := logStatusBarBg.Width(innerWidth).Render(left + mid + pad + right)
 

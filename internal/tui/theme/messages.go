@@ -9,6 +9,11 @@ type ReposLoadedMsg struct {
 	Err   error
 }
 
+type CurrentRepoLoadedMsg struct {
+	Repo *models.Repo
+	Err  error
+}
+
 type RunsLoadedMsg struct {
 	Repo   string
 	Runs   []models.WorkflowRun

@@ -18,6 +18,7 @@ type KeyMap struct {
 	QuickSwitch key.Binding
 	Filter      key.Binding
 	Help        key.Binding
+	OpenBrowser key.Binding
 }
 
 // Page navigation bindings (not in KeyMap since they're used directly)
@@ -46,4 +47,5 @@ var Keys = KeyMap{
 	QuickSwitch: key.NewBinding(key.WithKeys("ctrl+k"), key.WithHelp("ctrl+k", "quick switch")),
 	Filter:      key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 	Help:        key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+	OpenBrowser: key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("ctrl+o", "open browser")),
 }

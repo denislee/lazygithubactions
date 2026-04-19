@@ -36,6 +36,8 @@ type WorkflowRun struct {
 
 type Job struct {
 	ID          int64     `json:"id"`
+	DatabaseID  int64     `json:"databaseId"`
+	URL         string    `json:"url"`
 	Name        string    `json:"name"`
 	Status      string    `json:"status"`
 	Conclusion  string    `json:"conclusion"`

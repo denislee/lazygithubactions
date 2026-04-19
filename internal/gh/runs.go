@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"time"
 
@@ -53,8 +54,14 @@ func (c *Client) ListRuns(ctx context.Context, repo string) ([]models.WorkflowRu
 		if r.Actor != nil {
 			actor = r.Actor.Login
 		}
-		created, _ := time.Parse(time.RFC3339, r.CreatedAt)
-		updated, _ := time.Parse(time.RFC3339, r.UpdatedAt)
+		created, err := time.Parse(time.RFC3339, r.CreatedAt)
+		if err != nil && r.CreatedAt != "" {
+			log.Printf("parse created_at %q for run %d: %v", r.CreatedAt, r.ID, err)
+		}
+		updated, err := time.Parse(time.RFC3339, r.UpdatedAt)
+		if err != nil && r.UpdatedAt != "" {
+			log.Printf("parse updated_at %q for run %d: %v", r.UpdatedAt, r.ID, err)
+		}
 
 		runs[i] = models.WorkflowRun{
 			ID:           r.ID,

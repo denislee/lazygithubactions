@@ -60,3 +60,25 @@ func (c *Client) ListRepos(ctx context.Context) ([]models.Repo, error) {
 
 	return result, nil
 }
+
+// GetCurrentRepo returns the repository info for the current directory if it's a GitHub repo.
+func (c *Client) GetCurrentRepo(ctx context.Context) (*models.Repo, error) {
+	var repo struct {
+		Name          string `json:"name"`
+		NameWithOwner string `json:"nameWithOwner"`
+		Owner         struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+	}
+
+	err := c.runJSON(ctx, &repo, "repo", "view", "--json", "owner,name,nameWithOwner")
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.Repo{
+		Name:     repo.Name,
+		Owner:    repo.Owner.Login,
+		FullName: repo.NameWithOwner,
+	}, nil
+}

@@ -8,5 +8,8 @@ build:
 run: build
 	./$(BINARY)
 
+debug: build
+	LAZYGH_DEBUG=1 ./$(BINARY)
+
 clean:
 	rm -f $(BINARY)
