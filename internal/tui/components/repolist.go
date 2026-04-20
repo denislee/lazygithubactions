@@ -1,11 +1,11 @@
 package components
 
 import (
-	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/dns/lazygithubactions/internal/models"
 	"github.com/dns/lazygithubactions/internal/tui/theme"
 )
@@ -164,19 +164,25 @@ func (r *RepoList) ViewContent() string {
 
 		// Status icon from last known run
 		icon := ""
+		iconWidth := 0
 		if st, ok := r.repoStatus[repo.FullName]; ok {
 			ico := theme.StatusIcon(st.Status, st.Conclusion)
 			sty := theme.StatusStyle(st.Status, st.Conclusion)
 			icon = sty.Render(ico) + " "
+			iconWidth = lipgloss.Width(ico) + 1
 		}
 
-		line := fmt.Sprintf("%s%s%s", prefix, icon, repo.Name)
+		nameWidth := r.width - lipgloss.Width(prefix) - iconWidth
+		if nameWidth < 1 {
+			nameWidth = 1
+		}
+		name := truncate(repo.Name, nameWidth)
+
+		var line string
 		if i == r.cursor && r.focused {
-			line = theme.SelectedItemStyle.Render(prefix) + icon + theme.SelectedItemStyle.Render(repo.Name)
-		} else if i == r.cursor {
-			line = theme.NormalItemStyle.Render(prefix) + icon + theme.NormalItemStyle.Render(repo.Name)
+			line = theme.SelectedItemStyle.Render(prefix) + icon + theme.SelectedItemStyle.Render(name)
 		} else {
-			line = theme.NormalItemStyle.Render(prefix) + icon + theme.NormalItemStyle.Render(repo.Name)
+			line = theme.NormalItemStyle.Render(prefix) + icon + theme.NormalItemStyle.Render(name)
 		}
 		b.WriteString(line + "\n")
 	}
